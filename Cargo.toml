@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "projects/crates/ucf-types",
+    "projects/crates/ucf-ir",
+    "projects/crates/ucf",
+    "projects/crates/ucf-capability",
+    "projects/crates/ucf-optimize",
+    "projects/crates/ucf-scheduler",
+    "projects/crates/ucf-runtime",
+    "projects/crates/backends/ucf-backend-cuda",
+    "projects/crates/backends/ucf-backend-dx12",
+    "projects/crates/backends/ucf-backend-vulkan",
+    "projects/crates/backends/ucf-backend-rocm",
+]
+default-members = [
+    "projects/crates/ucf",
+    "projects/crates/ucf-types",
+    "projects/crates/ucf-ir",
+    "projects/crates/ucf-capability",
+    "projects/crates/ucf-optimize",
+    "projects/crates/ucf-scheduler",
+    "projects/crates/ucf-runtime",
+    "projects/crates/backends/ucf-backend-cuda",
+    "projects/crates/backends/ucf-backend-dx12",
+]
+exclude = [
+    "projects/.DS_Store",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MPL-2.0"
+authors = ["Aster <192607617@qq.com>"]
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+ucf-types = { path = "projects/crates/ucf-types" }
+ucf = { path = "projects/crates/ucf" }
+ucf-ir = { path = "projects/crates/ucf-ir" }
+ucf-capability = { path = "projects/crates/ucf-capability" }
+ucf-optimize = { path = "projects/crates/ucf-optimize" }
+ucf-scheduler = { path = "projects/crates/ucf-scheduler" }
+ucf-runtime = { path = "projects/crates/ucf-runtime" }
+
+[profile.release]
+lto = true
+panic = "abort"
