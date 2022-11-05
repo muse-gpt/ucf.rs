@@ -1,0 +1,12 @@
+[package]
+name = "ucf-types"
+description = "Shared UCF value types: IDs, domains, objectives, resource and task nodes"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
