@@ -1,0 +1,17 @@
+[package]
+name = "ucf-ir"
+description = "UCF graph IR: resource graph, task graph, dependency edges"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+ucf-types = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
