@@ -1,5 +1,5 @@
 use ucf_capability::{Feature, FeatureSet};
-use ucf_ir::Graph;
+use ucf_ir::{Graph, TaskNode};
 use ucf_scheduler::{Backend, Result};
 
 pub struct Dx12Backend;
@@ -31,7 +31,7 @@ impl Backend for Dx12Backend {
             .with(Feature::EnhancedBarriers)
     }
 
-    fn submit(&mut self, graph: &Graph) -> Result<()> {
+    fn submit_task(&mut self, graph: &Graph, _task: &TaskNode) -> Result<()> {
         graph.validate().map_err(ucf_scheduler::Error::from)?;
         // TODO: descriptor heap, dynamic state, raster/compute queues
         Ok(())

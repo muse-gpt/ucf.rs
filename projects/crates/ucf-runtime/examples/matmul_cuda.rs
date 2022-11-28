@@ -33,7 +33,7 @@ fn main() -> ucf_scheduler::Result<()> {
     };
 
     let mut runtime = Runtime::new();
-    runtime.register_backend(Box::new(CudaBackend::new(0)));
+    runtime.register_backend(Box::new(CudaBackend::new(0)?));
     runtime.run(&graph)?;
     Ok(())
 }

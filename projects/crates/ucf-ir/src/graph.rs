@@ -23,7 +23,7 @@ pub struct TaskGraph {
     pub edges: Vec<DepEdge>,
 }
 
-/// Combined IR document exchanged between frontends, scheduler, and backends.
+/// Combined IR document exchanged between frontends, scheduler, and ucf-backends.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Graph {
     pub resources: ResourceGraph,

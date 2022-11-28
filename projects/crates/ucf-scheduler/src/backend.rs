@@ -1,5 +1,5 @@
 use ucf_capability::FeatureSet;
-use ucf_ir::Graph;
+use ucf_ir::{Graph, TaskNode};
 
 use crate::error::Result;
 
@@ -9,5 +9,5 @@ pub trait Backend: Send + Sync {
 
     fn features(&self) -> FeatureSet;
 
-    fn submit(&mut self, graph: &Graph) -> Result<()>;
+    fn submit_task(&mut self, graph: &Graph, task: &TaskNode) -> Result<()>;
 }

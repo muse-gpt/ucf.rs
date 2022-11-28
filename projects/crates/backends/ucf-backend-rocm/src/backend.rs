@@ -1,5 +1,5 @@
 use ucf_capability::{Feature, FeatureSet};
-use ucf_ir::Graph;
+use ucf_ir::{Graph, TaskNode};
 use ucf_scheduler::{Backend, Result};
 
 pub struct RocmBackend {
@@ -23,7 +23,7 @@ impl Backend for RocmBackend {
             .with(Feature::TensorCore)
     }
 
-    fn submit(&mut self, graph: &Graph) -> Result<()> {
+    fn submit_task(&mut self, graph: &Graph, _task: &TaskNode) -> Result<()> {
         graph.validate().map_err(ucf_scheduler::Error::from)?;
         let _ = self.device_index;
         // TODO: HIP graph / kernel launches
