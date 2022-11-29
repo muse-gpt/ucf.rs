@@ -1,6 +1,6 @@
 [package]
 name = "ucf-backend-dx12"
-description = "DirectX 12 backend for UCF (stage 2)"
+description = "DirectX 12 backend for UCF (DXIL via ucf-emitter)"
 readme = "README.md"
 version.workspace = true
 edition.workspace = true
@@ -10,5 +10,10 @@ publish.workspace = true
 
 [dependencies]
 ucf-capability = { workspace = true }
+ucf-emitter = { workspace = true }
 ucf-ir = { workspace = true }
 ucf-scheduler = { workspace = true }
+ucf-types = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }

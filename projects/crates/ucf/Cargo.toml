@@ -20,8 +20,8 @@ ucf-capability = { workspace = true }
 ucf-optimize = { workspace = true }
 ucf-scheduler = { workspace = true }
 ucf-runtime = { workspace = true }
-ucf-backend-cuda = { path = "../backends/ucf-backend-cuda", optional = true }
-ucf-backend-dx12 = { path = "../backends/ucf-backend-dx12", optional = true }
+ucf-backend-cuda = { path = "../ucf-backends/ucf-backend-cuda", optional = true }
+ucf-backend-dx12 = { path = "../ucf-backends/ucf-backend-dx12", optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
