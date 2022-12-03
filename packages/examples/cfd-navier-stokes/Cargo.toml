@@ -1,0 +1,16 @@
+[package]
+name = "example-cfd-navier-stokes"
+description = "UCF IR example: 2D Navier-Stokes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "example-cfd-navier-stokes"
+path = "src/main.rs"
+
+[dependencies]
+ucf-example-kit = { workspace = true }
+ucf = { workspace = true }

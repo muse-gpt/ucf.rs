@@ -1,0 +1,16 @@
+[package]
+name = "example-science-molecular-dynamics"
+description = "UCF IR example: molecular dynamics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "example-science-molecular-dynamics"
+path = "src/main.rs"
+
+[dependencies]
+ucf-example-kit = { workspace = true }
+ucf = { workspace = true }

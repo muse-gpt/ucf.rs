@@ -1,0 +1,16 @@
+[package]
+name = "example-ai-fusion-dlss"
+description = "UCF IR example: DLSS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "example-ai-fusion-dlss"
+path = "src/main.rs"
+
+[dependencies]
+ucf-example-kit = { workspace = true }
+ucf = { workspace = true }

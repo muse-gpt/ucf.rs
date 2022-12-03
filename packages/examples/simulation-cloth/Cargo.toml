@@ -1,0 +1,16 @@
+[package]
+name = "example-simulation-cloth"
+description = "UCF IR example: cloth"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "example-simulation-cloth"
+path = "src/main.rs"
+
+[dependencies]
+ucf-example-kit = { workspace = true }
+ucf = { workspace = true }
