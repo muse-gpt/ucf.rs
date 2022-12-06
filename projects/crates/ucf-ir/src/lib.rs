@@ -2,10 +2,13 @@
 //!
 //! [`ucf_types`] holds shared value shapes; this crate adds graph containers
 //! and validation (topological order, cycle detection).
+#![warn(missing_docs)]
 
+mod builder;
 mod error;
 mod graph;
 
+pub use builder::{chain_edges, GraphBuilder};
 pub use error::{Error, Result};
 pub use graph::{DepEdge, Graph, ResourceGraph, TaskGraph};
 

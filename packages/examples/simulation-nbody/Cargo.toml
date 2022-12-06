@@ -12,5 +12,4 @@ name = "example-simulation-nbody"
 path = "src/main.rs"
 
 [dependencies]
-ucf-example-kit = { workspace = true }
 ucf = { workspace = true }

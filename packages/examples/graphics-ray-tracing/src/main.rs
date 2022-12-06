@@ -1,5 +1,4 @@
 use ucf::prelude::*;
-use ucf_example_kit::{GraphBuilder, dry_run};
 
 fn graph() -> Graph {
     let mut b = GraphBuilder::new();

@@ -9,7 +9,6 @@ members = [
     "projects/crates/ucf-scheduler",
     "projects/crates/ucf-emitter",
     "projects/crates/ucf-runtime",
-    "packages/examples/kit",
     "packages/examples/cfd-navier-stokes",
     "packages/examples/cfd-lbm",
     "packages/examples/simulation-rigid-body",
@@ -51,7 +50,6 @@ default-members = [
     "projects/crates/ucf-scheduler",
     "projects/crates/ucf-emitter",
     "projects/crates/ucf-runtime",
-    "packages/examples/kit",
     "packages/examples/cfd-navier-stokes",
     "packages/examples/cfd-lbm",
     "packages/examples/simulation-rigid-body",
@@ -114,7 +112,6 @@ ucf-capability = { path = "projects/crates/ucf-capability" }
 ucf-optimize = { path = "projects/crates/ucf-optimize" }
 ucf-scheduler = { path = "projects/crates/ucf-scheduler" }
 ucf-emitter = { path = "projects/crates/ucf-emitter" }
-ucf-example-kit = { path = "packages/examples/kit" }
 ucf-runtime = { path = "projects/crates/ucf-runtime" }
 ucf-backend-cuda = { path = "projects/crates/ucf-backends/ucf-backend-cuda" }
 ucf-backend-dx12 = { path = "projects/crates/ucf-backends/ucf-backend-dx12" }

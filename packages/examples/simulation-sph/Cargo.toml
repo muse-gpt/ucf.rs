@@ -12,5 +12,4 @@ name = "example-simulation-sph"
 path = "src/main.rs"
 
 [dependencies]
-ucf-example-kit = { workspace = true }
 ucf = { workspace = true }
