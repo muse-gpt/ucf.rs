@@ -1,7 +1,7 @@
 [package]
 name = "ucf-ir"
 description = "UCF graph IR: resource graph, task graph, dependency edges"
-readme = "README.md"
+readme = "readme.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

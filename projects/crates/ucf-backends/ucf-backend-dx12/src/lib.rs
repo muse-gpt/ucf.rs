@@ -1,3 +1,6 @@
+//! Direct3D 12 compute backend.
+#![warn(missing_docs)]
+
 #[cfg(windows)]
 mod win;
 

@@ -2,6 +2,7 @@
 //!
 //! This crate is the bottom of the dependency stack. It has no graph logic,
 //! no scheduler, and no backend bindings — only serializable data shapes.
+#![warn(missing_docs)]
 
 mod dep;
 mod ids;
