@@ -7,6 +7,7 @@ use ucf_types::TaskNode;
 pub struct Dx12Backend;
 
 impl Dx12Backend {
+    /// Returns a non-Windows stub backend handle.
     pub fn new() -> Result<Self> {
         Ok(Self)
     }
