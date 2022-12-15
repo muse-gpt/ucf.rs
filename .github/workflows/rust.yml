@@ -11,24 +11,6 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  conventions:
-    name: Repository conventions
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install cargo-cry
-        run: cargo install --git https://github.com/oovm/cargo-tools.git --bin cargo-cry --locked
-
-      - name: cargo cry
-        run: cargo cry
-
-      - name: cargo test
-        run: cargo test --workspace
-
   test:
     name: Test (${{ matrix.os }})
     strategy:
