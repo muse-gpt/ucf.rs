@@ -1,7 +1,7 @@
 //! UCF graph intermediate representation.
 //!
 //! [`ucf_types`] holds shared value shapes; this crate adds graph containers
-//! and validation (topological order, cycle detection).
+//! and validation (unique ids, edge references, topological order).
 #![warn(missing_docs)]
 
 mod builder;
