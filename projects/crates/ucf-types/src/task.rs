@@ -9,6 +9,8 @@ use crate::objective::{Objective, Priority};
 pub enum TaskKind {
     Raster,
     Dispatch,
+    /// Write a constant into a buffer (CPU reference path).
+    Fill,
     MatMul,
     RtTrace,
     Copy,
