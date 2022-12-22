@@ -40,6 +40,7 @@ members = [
     "projects/crates/ucf-backends/ucf-backend-dx12",
     "projects/crates/ucf-backends/ucf-backend-vulkan",
     "projects/crates/ucf-backends/ucf-backend-rocm",
+    "projects/crates/ucf-backends/ucf-backend-cpu",
 ]
 default-members = [
     "projects/crates/ucf",
@@ -79,6 +80,7 @@ default-members = [
     "projects/examples/exotic-hardware-pim-matmul",
     "projects/crates/ucf-backends/ucf-backend-cuda",
     "projects/crates/ucf-backends/ucf-backend-dx12",
+    "projects/crates/ucf-backends/ucf-backend-cpu",
 ]
 exclude = [
     "projects/.DS_Store",
@@ -117,6 +119,7 @@ ucf-backend-cuda = { path = "projects/crates/ucf-backends/ucf-backend-cuda" }
 ucf-backend-dx12 = { path = "projects/crates/ucf-backends/ucf-backend-dx12" }
 ucf-backend-vulkan = { path = "projects/crates/ucf-backends/ucf-backend-vulkan" }
 ucf-backend-rocm = { path = "projects/crates/ucf-backends/ucf-backend-rocm" }
+ucf-backend-cpu = { path = "projects/crates/ucf-backends/ucf-backend-cpu" }
 
 [profile.release]
 lto = true
