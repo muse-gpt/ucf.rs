@@ -6,6 +6,9 @@ pub fn emit_dxil(program: &ShaderProgram) -> Result<Vec<u8>, String> {
         match op {
             ShaderOp::MemCopy => continue,
             ShaderOp::IotaFill { .. } => return Ok(emit_iota_fill_dxil(&program.entry)),
+            ShaderOp::MatMul => {
+                return Err("DXIL matmul emitter is not implemented in stage 0".into())
+            }
         }
     }
     Err("program has no emittable DXIL ops".into())
