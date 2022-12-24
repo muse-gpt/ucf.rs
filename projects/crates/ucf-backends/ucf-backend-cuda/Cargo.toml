@@ -15,3 +15,7 @@ ucf-emitter = { workspace = true }
 ucf-ir = { workspace = true }
 ucf-scheduler = { workspace = true }
 ucf-types = { workspace = true }
+
+[dev-dependencies]
+ucf-backend-cpu = { workspace = true }
+ucf-runtime = { workspace = true }
