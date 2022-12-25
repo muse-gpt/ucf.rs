@@ -11,5 +11,8 @@ publish.workspace = true
 [dependencies]
 ucf-types = { workspace = true }
 
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }
+
 [dev-dependencies]
 serde_json = { workspace = true }
