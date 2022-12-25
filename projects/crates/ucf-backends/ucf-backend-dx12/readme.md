@@ -2,6 +2,9 @@
 
 DirectX 12 backend via raw **D3D12** API (`windows` crate).
 
-- Compute PSO from [`ucf-emitter`](../ucf-emitter/) DXIL bytes
-- No HLSL source, no `D3DCompile`
+- Device buffers (`prepare` / `write_f32` / `read_f32`)
+- `Copy` via `CopyBufferRegion`
+- `Fill` / `MatMul` compute from [`ucf-emitter`](../../ucf-emitter/) DXBC (`cs_5_1`)
 - Windows only (`stub` on other targets)
+
+Parity: `tests/parity_cpu.rs` soft-skips when no D3D12 device is available.
