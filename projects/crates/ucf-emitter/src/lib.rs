@@ -1,12 +1,14 @@
-//! Built-in shader emitter: UCF `ShaderProgram` → PTX / DXBC / SPIR-V bytes.
+//! Built-in shader emitter: UCF `ShaderProgram` → PTX / DXBC / SPIR-V / HIP bytes.
 #![warn(missing_docs)]
 
 mod dxil;
+mod hip;
 mod ptx;
 mod spirv;
 mod task;
 
 pub use dxil::emit_dxil;
+pub use hip::emit_hip;
 pub use ptx::emit_ptx;
 pub use spirv::emit_spirv;
 pub use task::{needs_kernel, program_from_task};
@@ -20,6 +22,8 @@ pub enum ShaderIsa {
     Dxil,
     /// Vulkan SPIR-V module bytes.
     Spirv,
+    /// HIP C++ source for `hiprtc` (NUL-terminated UTF-8).
+    Hip,
 }
 
 /// Bytes produced by the built-in emitter for one ISA.
@@ -38,6 +42,7 @@ impl EmittedShader {
             ShaderIsa::Ptx => emit_ptx(program)?,
             ShaderIsa::Dxil => emit_dxil(program)?,
             ShaderIsa::Spirv => emit_spirv(program)?,
+            ShaderIsa::Hip => emit_hip(program)?,
         };
         Ok(Self { isa, bytes })
     }
