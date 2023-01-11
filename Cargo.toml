@@ -81,6 +81,7 @@ default-members = [
     "projects/crates/ucf-backends/ucf-backend-cuda",
     "projects/crates/ucf-backends/ucf-backend-dx12",
     "projects/crates/ucf-backends/ucf-backend-vulkan",
+    "projects/crates/ucf-backends/ucf-backend-rocm",
     "projects/crates/ucf-backends/ucf-backend-cpu",
 ]
 exclude = [
