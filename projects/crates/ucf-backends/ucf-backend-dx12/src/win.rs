@@ -11,7 +11,8 @@ use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEV
 use windows::Win32::Graphics::Direct3D12::{
     D3D12SerializeRootSignature, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
     D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-    D3D12_FENCE_FLAG_NONE, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
+    D3D12_FENCE_FLAG_NONE, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_FLAG_SHARED, D3D12_HEAP_FLAGS,
+    D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
     D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD, D3D12_MEMORY_POOL_UNKNOWN,
     D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
     D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
@@ -39,6 +40,17 @@ struct DeviceBuffer {
     state: D3D12_RESOURCE_STATES,
 }
 
+struct SharedBuffer {
+    resource: ID3D12Resource,
+    handle: HANDLE,
+    bytes: usize,
+    state: D3D12_RESOURCE_STATES,
+}
+
+/// Opaque id for a DX12 buffer exported via NT shared handle (CUDA import).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SharedBufferId(pub u64);
+
 /// DirectX 12 backend with device-resident buffers and compute dispatch.
 pub struct Dx12Backend {
     device: ID3D12Device,
@@ -48,6 +60,8 @@ pub struct Dx12Backend {
     fence_value: u64,
     fence_event: HANDLE,
     buffers: BTreeMap<ResourceId, DeviceBuffer>,
+    shared: BTreeMap<SharedBufferId, SharedBuffer>,
+    next_shared: u64,
 }
 
 impl Dx12Backend {
@@ -90,7 +104,111 @@ impl Dx12Backend {
                 fence_value: 0,
                 fence_event,
                 buffers: BTreeMap::new(),
+                shared: BTreeMap::new(),
+                next_shared: 1,
             })
+        }
+    }
+
+    /// Allocate a `HEAP_FLAG_SHARED` buffer and return its id + Win32 NT handle for CUDA import.
+    pub fn shared_alloc(&mut self, bytes: usize) -> Result<(SharedBufferId, isize)> {
+        unsafe {
+            let resource = self.create_buffer(
+                bytes,
+                D3D12_HEAP_TYPE_DEFAULT,
+                D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+                D3D12_RESOURCE_STATE_COMMON,
+                D3D12_HEAP_FLAG_SHARED,
+            )?;
+            let handle = self
+                .device
+                .CreateSharedHandle(&resource, None, 0x1000_0000u32, None)
+                .map_err(dx_err)?;
+            let id = SharedBufferId(self.next_shared);
+            self.next_shared += 1;
+            self.shared.insert(
+                id,
+                SharedBuffer {
+                    resource,
+                    handle,
+                    bytes,
+                    state: D3D12_RESOURCE_STATE_COMMON,
+                },
+            );
+            let zeros = vec![0u8; bytes];
+            self.shared_upload(id, &zeros)?;
+            Ok((id, handle.0 as isize))
+        }
+    }
+
+    /// Upload host `f32` values into a shared buffer.
+    pub fn shared_write_f32(&mut self, id: SharedBufferId, values: &[f32]) -> Result<()> {
+        let bytes = values.len() * 4;
+        let buf = self.shared.get(&id).ok_or_else(|| {
+            map_backend_err(BackendError(format!("shared buffer {} not allocated", id.0)))
+        })?;
+        if buf.bytes != bytes {
+            return Err(map_backend_err(BackendError(format!(
+                "shared buffer {} expected {} bytes, got {bytes}",
+                id.0, buf.bytes
+            ))));
+        }
+        let mut host = Vec::with_capacity(bytes);
+        for v in values {
+            host.extend_from_slice(&v.to_le_bytes());
+        }
+        self.shared_upload(id, &host)
+    }
+
+    /// NT handle previously returned by [`shared_alloc`] (still owned by this backend).
+    pub fn shared_nt_handle(&self, id: SharedBufferId) -> Result<isize> {
+        let buf = self.shared.get(&id).ok_or_else(|| {
+            map_backend_err(BackendError(format!("shared buffer {} not allocated", id.0)))
+        })?;
+        Ok(buf.handle.0 as isize)
+    }
+
+    fn shared_upload(&mut self, id: SharedBufferId, bytes: &[u8]) -> Result<()> {
+        unsafe {
+            let upload = self.create_buffer(
+                bytes.len(),
+                D3D12_HEAP_TYPE_UPLOAD,
+                D3D12_RESOURCE_FLAG_NONE,
+                D3D12_RESOURCE_STATE_GENERIC_READ_UPLOAD(),
+                D3D12_HEAP_FLAG_NONE,
+            )?;
+            {
+                let mut ptr = std::ptr::null_mut();
+                upload.Map(0, None, Some(&mut ptr)).map_err(dx_err)?;
+                std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr.cast(), bytes.len());
+                upload.Unmap(0, None);
+            }
+
+            self.allocator.Reset().map_err(dx_err)?;
+            let list: ID3D12GraphicsCommandList = self
+                .device
+                .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &self.allocator, None)
+                .map_err(dx_err)?;
+
+            {
+                let buf = self.shared.get_mut(&id).unwrap();
+                transition(&list, &buf.resource, buf.state, D3D12_RESOURCE_STATE_COPY_DEST);
+                buf.state = D3D12_RESOURCE_STATE_COPY_DEST;
+                list.CopyBufferRegion(&buf.resource, 0, &upload, 0, bytes.len() as u64);
+                transition(
+                    &list,
+                    &buf.resource,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    D3D12_RESOURCE_STATE_COMMON,
+                );
+                buf.state = D3D12_RESOURCE_STATE_COMMON;
+            }
+
+            list.Close().map_err(dx_err)?;
+            let lists = [Some(list.cast().map_err(dx_err)?)];
+            self.queue.ExecuteCommandLists(&lists);
+            self.signal_fence()?;
+            Ok(())
         }
     }
 
@@ -155,6 +273,7 @@ impl Dx12Backend {
                 D3D12_HEAP_TYPE_UPLOAD,
                 D3D12_RESOURCE_FLAG_NONE,
                 D3D12_RESOURCE_STATE_GENERIC_READ_UPLOAD(),
+                D3D12_HEAP_FLAG_NONE,
             )?;
             {
                 let mut ptr = std::ptr::null_mut();
@@ -200,6 +319,7 @@ impl Dx12Backend {
                 D3D12_HEAP_TYPE_READBACK,
                 D3D12_RESOURCE_FLAG_NONE,
                 D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_HEAP_FLAG_NONE,
             )?;
 
             self.allocator.Reset().map_err(dx_err)?;
@@ -242,6 +362,7 @@ impl Dx12Backend {
         heap_type: windows::Win32::Graphics::Direct3D12::D3D12_HEAP_TYPE,
         flags: windows::Win32::Graphics::Direct3D12::D3D12_RESOURCE_FLAGS,
         initial: D3D12_RESOURCE_STATES,
+        heap_flags: D3D12_HEAP_FLAGS,
     ) -> Result<ID3D12Resource> {
         unsafe {
             let heap = D3D12_HEAP_PROPERTIES {
@@ -270,7 +391,7 @@ impl Dx12Backend {
             self.device
                 .CreateCommittedResource(
                     &heap,
-                    D3D12_HEAP_FLAG_NONE,
+                    heap_flags,
                     &desc,
                     initial,
                     None,
@@ -586,6 +707,10 @@ unsafe impl Sync for Dx12Backend {}
 impl Drop for Dx12Backend {
     fn drop(&mut self) {
         unsafe {
+            let shared = std::mem::take(&mut self.shared);
+            for (_, buf) in shared {
+                let _ = CloseHandle(buf.handle);
+            }
             let _ = CloseHandle(self.fence_event);
         }
     }
@@ -632,6 +757,7 @@ impl Backend for Dx12Backend {
                 D3D12_HEAP_TYPE_DEFAULT,
                 D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
                 D3D12_RESOURCE_STATE_COMMON,
+                D3D12_HEAP_FLAG_NONE,
             )?;
             // Zero-initialize via upload of zeros.
             self.buffers.insert(
