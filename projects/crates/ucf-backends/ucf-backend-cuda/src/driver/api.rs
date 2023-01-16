@@ -36,6 +36,9 @@ pub struct CudaDriver {
     cuStreamCreate: CuStreamCreate,
     cuStreamSynchronize: CuStreamSynchronize,
     cuStreamDestroy: CuStreamDestroy,
+    cuImportExternalMemory: CuImportExternalMemory,
+    cuExternalMemoryGetMappedBuffer: CuExternalMemoryGetMappedBuffer,
+    cuDestroyExternalMemory: CuDestroyExternalMemory,
     context: CUcontext,
     stream: CUstream,
 }
@@ -67,6 +70,15 @@ impl CudaDriver {
             let cuStreamCreate = load_fn!(lib, cuStreamCreate, CuStreamCreate);
             let cuStreamSynchronize = load_fn!(lib, cuStreamSynchronize, CuStreamSynchronize);
             let cuStreamDestroy = load_fn!(lib, cuStreamDestroy, CuStreamDestroy);
+            let cuImportExternalMemory =
+                load_fn!(lib, cuImportExternalMemory, CuImportExternalMemory);
+            let cuExternalMemoryGetMappedBuffer = load_fn!(
+                lib,
+                cuExternalMemoryGetMappedBuffer,
+                CuExternalMemoryGetMappedBuffer
+            );
+            let cuDestroyExternalMemory =
+                load_fn!(lib, cuDestroyExternalMemory, CuDestroyExternalMemory);
 
             check((cuInit)(0), "cuInit")?;
 
@@ -97,6 +109,9 @@ impl CudaDriver {
                 cuStreamCreate,
                 cuStreamSynchronize,
                 cuStreamDestroy,
+                cuImportExternalMemory,
+                cuExternalMemoryGetMappedBuffer,
+                cuDestroyExternalMemory,
                 context,
                 stream,
             })
@@ -251,6 +266,55 @@ impl CudaDriver {
             )?;
         }
         Ok(func)
+    }
+
+    /// Import a D3D12 shared NT handle and map it as a device buffer.
+    pub fn import_d3d12_resource(
+        &self,
+        nt_handle: *mut c_void,
+        bytes: usize,
+    ) -> Result<(CUexternalMemory, CUdeviceptr), DriverError> {
+        unsafe {
+            let desc = CUDA_EXTERNAL_MEMORY_HANDLE_DESC {
+                type_: CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE,
+                handle: CUDA_EXTERNAL_MEMORY_HANDLE {
+                    win32: CUDA_EXTERNAL_MEMORY_WIN32 {
+                        handle: nt_handle,
+                        name: std::ptr::null(),
+                    },
+                },
+                size: bytes as u64,
+                flags: CUDA_EXTERNAL_MEMORY_DEDICATED,
+            };
+            let mut ext: CUexternalMemory = std::ptr::null_mut();
+            check(
+                (self.cuImportExternalMemory)(&mut ext, &desc),
+                "cuImportExternalMemory",
+            )?;
+            let buf_desc = CUDA_EXTERNAL_MEMORY_BUFFER_DESC {
+                offset: 0,
+                size: bytes as u64,
+                flags: 0,
+            };
+            let mut ptr: CUdeviceptr = 0;
+            if let Err(err) = check(
+                (self.cuExternalMemoryGetMappedBuffer)(&mut ptr, ext, &buf_desc),
+                "cuExternalMemoryGetMappedBuffer",
+            ) {
+                let _ = (self.cuDestroyExternalMemory)(ext);
+                return Err(err);
+            }
+            Ok((ext, ptr))
+        }
+    }
+
+    pub fn destroy_external_memory(&self, ext: CUexternalMemory) -> Result<(), DriverError> {
+        unsafe {
+            check(
+                (self.cuDestroyExternalMemory)(ext),
+                "cuDestroyExternalMemory",
+            )
+        }
     }
 
     pub fn synchronize(&self) -> Result<(), DriverError> {
