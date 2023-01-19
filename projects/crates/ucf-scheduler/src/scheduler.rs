@@ -28,6 +28,10 @@ impl Scheduler {
     ///
     /// Ready tasks prefer [`Priority::Interactive`] and tighter effective deadlines
     /// (see [`crate::effective_deadlines`]) before batch work.
+    ///
+    /// Placement: optional string param `backend` pins a task to a registered backend
+    /// name (exact or substring). Crossing backends calls [`Backend::flush`] on the
+    /// previous backend before the next submit.
     pub fn execute(&mut self, graph: &Graph) -> Result<()> {
         graph.validate()?;
 
@@ -37,6 +41,7 @@ impl Scheduler {
 
         let deadlines = effective_deadlines(graph);
         let order = schedule_order(graph, &deadlines)?;
+        let mut last_backend: Option<usize> = None;
         for task_id in order {
             let task = graph
                 .tasks
@@ -45,12 +50,31 @@ impl Scheduler {
                 .find(|t| t.id == task_id)
                 .expect("task in order must exist");
             let backend_idx = self.pick_backend_index(task)?;
+            if let Some(prev) = last_backend {
+                if prev != backend_idx {
+                    self.backends[prev].flush()?;
+                }
+            }
             self.backends[backend_idx].submit_task(graph, task)?;
+            last_backend = Some(backend_idx);
         }
         Ok(())
     }
 
     fn pick_backend_index(&self, task: &ucf_ir::TaskNode) -> Result<usize> {
+        if let Some(ucf_ir::ParamValue::Str(name)) = task.params.get("backend") {
+            let pinned = self
+                .backends
+                .iter()
+                .position(|b| b.name() == name || b.name().contains(name.as_str()));
+            if let Some(idx) = pinned {
+                return Ok(idx);
+            }
+            return Err(Error::NoBackend(format!(
+                "pinned backend `{name}` not registered"
+            )));
+        }
+
         let prefer_cuda = matches!(
             task.kind,
             ucf_ir::TaskKind::MatMul | ucf_ir::TaskKind::Dispatch
@@ -211,6 +235,86 @@ mod tests {
             objective,
             priority,
         }
+    }
+
+    struct FlushBackend {
+        name: String,
+        order: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl Backend for FlushBackend {
+        fn name(&self) -> &str {
+            &self.name
+        }
+
+        fn features(&self) -> ucf_capability::FeatureSet {
+            ucf_capability::FeatureSet::new()
+        }
+
+        fn submit_task(&mut self, _graph: &Graph, task: &ucf_ir::TaskNode) -> Result<()> {
+            self.order
+                .lock()
+                .unwrap()
+                .push(format!("submit:{}:{}", self.name, task.id.0));
+            Ok(())
+        }
+
+        fn flush(&mut self) -> Result<()> {
+            self.order
+                .lock()
+                .unwrap()
+                .push(format!("flush:{}", self.name));
+            Ok(())
+        }
+    }
+
+    fn pinned(id: u64, backend: &str) -> TaskNode {
+        let mut params = Map::new();
+        params.insert("backend".into(), ucf_ir::ParamValue::Str(backend.into()));
+        TaskNode {
+            id: TaskId(id),
+            kind: TaskKind::Custom("x".into()),
+            shader: ShaderId(id),
+            params,
+            dispatch: Default::default(),
+            objective: Objective::MaxThroughput,
+            priority: Priority::Batch,
+        }
+    }
+
+    #[test]
+    fn pin_and_flush_when_crossing_backends() {
+        let graph = Graph {
+            resources: ResourceGraph { nodes: vec![] },
+            tasks: TaskGraph {
+                nodes: vec![pinned(1, "dx12"), pinned(2, "cuda")],
+                edges: vec![DepEdge {
+                    from_task: Some(TaskId(1)),
+                    from_resource: None,
+                    to_task: TaskId(2),
+                    kind: DepKind::Execution,
+                }],
+            },
+        };
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut sched = Scheduler::new();
+        sched.register(Box::new(FlushBackend {
+            name: "dx12".into(),
+            order: log.clone(),
+        }));
+        sched.register(Box::new(FlushBackend {
+            name: "cuda".into(),
+            order: log.clone(),
+        }));
+        sched.execute(&graph).expect("execute");
+        assert_eq!(
+            *log.lock().unwrap(),
+            vec![
+                "submit:dx12:1".to_string(),
+                "flush:dx12".to_string(),
+                "submit:cuda:2".to_string(),
+            ]
+        );
     }
 
     #[test]

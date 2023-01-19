@@ -18,4 +18,11 @@ pub trait Backend: Send + Sync {
 
     /// Execute one task after dependencies have completed.
     fn submit_task(&mut self, graph: &Graph, task: &TaskNode) -> Result<()>;
+
+    /// Block until prior submits on this backend are visible to other backends.
+    ///
+    /// Called by the scheduler when the next task is placed on a different backend.
+    fn flush(&mut self) -> Result<()> {
+        Ok(())
+    }
 }
