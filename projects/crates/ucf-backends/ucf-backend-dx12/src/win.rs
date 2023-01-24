@@ -168,6 +168,31 @@ impl Dx12Backend {
         Ok(buf.handle.0 as isize)
     }
 
+    /// Publish a shared buffer under a graph [`ResourceId`] so Fill/Copy can target it.
+    pub fn publish_shared(&mut self, resource: ResourceId, shared: SharedBufferId) -> Result<()> {
+        let buf = self.shared.get(&shared).ok_or_else(|| {
+            map_backend_err(BackendError(format!("shared buffer {} not allocated", shared.0)))
+        })?;
+        if let Some(existing) = self.buffers.get(&resource) {
+            if existing.bytes != buf.bytes {
+                return Err(map_backend_err(BackendError(format!(
+                    "resource {} size mismatch for shared publish",
+                    resource.0
+                ))));
+            }
+            return Ok(());
+        }
+        self.buffers.insert(
+            resource,
+            DeviceBuffer {
+                resource: buf.resource.clone(),
+                bytes: buf.bytes,
+                state: buf.state,
+            },
+        );
+        Ok(())
+    }
+
     fn shared_upload(&mut self, id: SharedBufferId, bytes: &[u8]) -> Result<()> {
         unsafe {
             let upload = self.create_buffer(
@@ -786,6 +811,11 @@ impl Backend for Dx12Backend {
                 "dx12 backend does not implement {other:?}"
             )))),
         }
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        // Per-submit fence waits already drain the queue; flush is a no-op barrier.
+        Ok(())
     }
 }
 
