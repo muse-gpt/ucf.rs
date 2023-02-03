@@ -9,26 +9,34 @@ use windows::core::Interface;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_12_1};
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12SerializeRootSignature, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC,
-    D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+    D3D12SerializeRootSignature, D3D12_CLEAR_VALUE, D3D12_COMMAND_LIST_TYPE_DIRECT,
+    D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPUTE_PIPELINE_STATE_DESC,
+    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+    D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
     D3D12_FENCE_FLAG_NONE, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_FLAG_SHARED, D3D12_HEAP_FLAGS,
-    D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
-    D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD, D3D12_MEMORY_POOL_UNKNOWN,
+    D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK,
+    D3D12_HEAP_TYPE_UPLOAD, D3D12_MEMORY_POOL_UNKNOWN, D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
     D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
     D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-    D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
+    D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
     D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATE_COMMON,
     D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE,
-    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-    D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR,
-    D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0, D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS,
-    D3D12_ROOT_PARAMETER_TYPE_SRV, D3D12_ROOT_PARAMETER_TYPE_UAV, D3D12_ROOT_SIGNATURE_DESC,
-    D3D12_ROOT_SIGNATURE_FLAG_NONE, D3D12_SHADER_BYTECODE, D3D12_SHADER_VISIBILITY_ALL,
-    D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D_ROOT_SIGNATURE_VERSION_1, ID3D12CommandAllocator,
-    ID3D12CommandQueue, ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12PipelineState,
-    ID3D12Resource, ID3D12RootSignature, D3D12CreateDevice,
+    D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET,
+    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_TRANSITION_BARRIER,
+    D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
+    D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_SRV,
+    D3D12_ROOT_PARAMETER_TYPE_UAV, D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_NONE,
+    D3D12_SHADER_BYTECODE, D3D12_SHADER_VISIBILITY_ALL, D3D12_TEXTURE_COPY_LOCATION,
+    D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+    D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D_ROOT_SIGNATURE_VERSION_1,
+    ID3D12CommandAllocator, ID3D12CommandQueue, ID3D12DescriptorHeap, ID3D12Device, ID3D12Fence,
+    ID3D12GraphicsCommandList, ID3D12PipelineState, ID3D12Resource, ID3D12RootSignature,
+    D3D12CreateDevice,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
+};
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory4};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
 
@@ -270,6 +278,18 @@ impl Dx12Backend {
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect())
+    }
+
+    /// Download a device buffer as raw bytes (e.g. `R8G8B8A8` raster readback).
+    pub fn read_u8(&mut self, id: ResourceId) -> Result<Vec<u8>> {
+        let bytes = self
+            .buffers
+            .get(&id)
+            .ok_or_else(|| {
+                map_backend_err(BackendError(format!("resource {} not allocated", id.0)))
+            })?
+            .bytes;
+        self.readback(id, bytes)
     }
 
     /// Run every task on this backend. Caller must [`prepare`] and seed inputs first.
@@ -633,6 +653,160 @@ impl Dx12Backend {
         }
     }
 
+    /// Clear an R8G8B8A8 render target and copy pixels into buffer `dst`.
+    ///
+    /// Params: `dst`, `width`, `height`, optional `r`/`g`/`b`/`a` in `0..1`.
+    fn run_raster(&mut self, task: &TaskNode) -> Result<()> {
+        let dst = resource_param(task, "dst").map_err(map_backend_err)?;
+        let width = u32_param(task, "width").map_err(map_backend_err)?;
+        let height = u32_param(task, "height").map_err(map_backend_err)?;
+        if width == 0 || height == 0 {
+            return Err(map_backend_err(BackendError(
+                "raster width/height must be > 0".into(),
+            )));
+        }
+        let r = f32_param(task, "r").unwrap_or(0.0);
+        let g = f32_param(task, "g").unwrap_or(0.0);
+        let b = f32_param(task, "b").unwrap_or(0.0);
+        let a = f32_param(task, "a").unwrap_or(1.0);
+        let need = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or_else(|| map_backend_err(BackendError("raster size overflow".into())))?;
+        let dst_bytes = self.buf_bytes(dst)?;
+        if dst_bytes < need {
+            return Err(map_backend_err(BackendError(format!(
+                "raster destination {} has {dst_bytes} bytes, need at least {need}",
+                dst.0
+            ))));
+        }
+
+        unsafe {
+            let clear = D3D12_CLEAR_VALUE {
+                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_CLEAR_VALUE_0 {
+                    Color: [r, g, b, a],
+                },
+            };
+            let heap = D3D12_HEAP_PROPERTIES {
+                Type: D3D12_HEAP_TYPE_DEFAULT,
+                CPUPageProperty: D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                MemoryPoolPreference: D3D12_MEMORY_POOL_UNKNOWN,
+                CreationNodeMask: 0,
+                VisibleNodeMask: 0,
+            };
+            let rt_desc = D3D12_RESOURCE_DESC {
+                Dimension: D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                Alignment: 0,
+                Width: width as u64,
+                Height: height,
+                DepthOrArraySize: 1,
+                MipLevels: 1,
+                Format: DXGI_FORMAT_R8G8B8A8_UNORM,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                Layout: D3D12_TEXTURE_LAYOUT_UNKNOWN,
+                Flags: D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+            };
+            let mut rt: Option<ID3D12Resource> = None;
+            self.device
+                .CreateCommittedResource(
+                    &heap,
+                    D3D12_HEAP_FLAG_NONE,
+                    &rt_desc,
+                    D3D12_RESOURCE_STATE_RENDER_TARGET,
+                    Some(&clear),
+                    &mut rt,
+                )
+                .map_err(dx_err)?;
+            let rt = rt.ok_or_else(|| dx_err_msg("raster RT CreateCommittedResource null"))?;
+
+            let heap_desc = D3D12_DESCRIPTOR_HEAP_DESC {
+                Type: D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
+                NumDescriptors: 1,
+                Flags: D3D12_DESCRIPTOR_HEAP_FLAG_NONE,
+                NodeMask: 0,
+            };
+            let rtv_heap: ID3D12DescriptorHeap = self
+                .device
+                .CreateDescriptorHeap(&heap_desc)
+                .map_err(dx_err)?;
+            let rtv: D3D12_CPU_DESCRIPTOR_HANDLE =
+                rtv_heap.GetCPUDescriptorHandleForHeapStart();
+            self.device.CreateRenderTargetView(&rt, None, rtv);
+
+            let mut footprint = D3D12_PLACED_SUBRESOURCE_FOOTPRINT::default();
+            let mut row_count = 0u32;
+            let mut row_size = 0u64;
+            let mut total = 0u64;
+            self.device.GetCopyableFootprints(
+                &rt_desc,
+                0,
+                1,
+                0,
+                Some(&mut footprint),
+                Some(&mut row_count),
+                Some(&mut row_size),
+                Some(&mut total),
+            );
+            let staging = self.create_buffer(
+                total as usize,
+                D3D12_HEAP_TYPE_READBACK,
+                D3D12_RESOURCE_FLAG_NONE,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_HEAP_FLAG_NONE,
+            )?;
+
+            self.allocator.Reset().map_err(dx_err)?;
+            let list: ID3D12GraphicsCommandList = self
+                .device
+                .CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, &self.allocator, None)
+                .map_err(dx_err)?;
+
+            list.ClearRenderTargetView(rtv, &[r, g, b, a], None);
+            transition(
+                &list,
+                &rt,
+                D3D12_RESOURCE_STATE_RENDER_TARGET,
+                D3D12_RESOURCE_STATE_COPY_SOURCE,
+            );
+            let src_loc = D3D12_TEXTURE_COPY_LOCATION {
+                pResource: std::mem::ManuallyDrop::new(Some(rt.clone())),
+                Type: D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
+                Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_TEXTURE_COPY_LOCATION_0 {
+                    SubresourceIndex: 0,
+                },
+            };
+            let dst_loc = D3D12_TEXTURE_COPY_LOCATION {
+                pResource: std::mem::ManuallyDrop::new(Some(staging.clone())),
+                Type: D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT,
+                Anonymous: windows::Win32::Graphics::Direct3D12::D3D12_TEXTURE_COPY_LOCATION_0 {
+                    PlacedFootprint: footprint,
+                },
+            };
+            list.CopyTextureRegion(&dst_loc, 0, 0, 0, &src_loc, None);
+            list.Close().map_err(dx_err)?;
+            let lists = [Some(list.cast().map_err(dx_err)?)];
+            self.queue.ExecuteCommandLists(&lists);
+            self.signal_fence()?;
+
+            let mut ptr = std::ptr::null_mut();
+            staging.Map(0, None, Some(&mut ptr)).map_err(dx_err)?;
+            let mut pixels = vec![0u8; need];
+            let row_pitch = footprint.Footprint.RowPitch as usize;
+            for y in 0..height as usize {
+                let src_row = ptr.cast::<u8>().add(y * row_pitch);
+                let dst_row = pixels.as_mut_ptr().add(y * (width as usize) * 4);
+                std::ptr::copy_nonoverlapping(src_row, dst_row, (width as usize) * 4);
+            }
+            staging.Unmap(0, None);
+
+            self.upload(dst, &pixels)
+        }
+    }
+
     fn buf_bytes(&self, id: ResourceId) -> Result<usize> {
         self.buffers
             .get(&id)
@@ -804,8 +978,9 @@ impl Backend for Dx12Backend {
             TaskKind::Copy => self.run_copy(task),
             TaskKind::Fill => self.run_fill(task),
             TaskKind::MatMul => self.run_matmul(task),
-            TaskKind::Raster | TaskKind::RtTrace => Err(map_backend_err(BackendError(
-                "raster and ray tracing are not in the dx12 thin gate".into(),
+            TaskKind::Raster => self.run_raster(task),
+            TaskKind::RtTrace => Err(map_backend_err(BackendError(
+                "ray tracing is not in the dx12 thin gate".into(),
             ))),
             other => Err(map_backend_err(BackendError(format!(
                 "dx12 backend does not implement {other:?}"
