@@ -27,4 +27,18 @@ pub enum Error {
     /// Serialization / deserialization failed.
     #[error("serialization failed: {0}")]
     Serde(String),
+    /// Binary `.ucf` magic bytes are not `UCF\0`.
+    #[error("invalid .ucf magic")]
+    InvalidMagic,
+    /// Binary wire major is unsupported by this build.
+    #[error("unsupported .ucf wire major: {found} (supported: {supported})")]
+    UnsupportedWireMajor {
+        /// Major found in the file.
+        found: u32,
+        /// Major this crate accepts.
+        supported: u32,
+    },
+    /// Binary payload is truncated or malformed.
+    #[error("truncated .ucf binary: {0}")]
+    TruncatedBinary(String),
 }
