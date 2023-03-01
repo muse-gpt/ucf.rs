@@ -14,6 +14,7 @@ cpu = ["dep:ucf-backend-cpu"]
 cuda = ["dep:ucf-backend-cuda"]
 dx12 = ["dep:ucf-backend-dx12"]
 vulkan = ["dep:ucf-backend-vulkan"]
+rocm = ["dep:ucf-backend-rocm"]
 
 [dependencies]
 ucf-types = { workspace = true }
@@ -26,6 +27,7 @@ ucf-backend-cpu = { workspace = true, optional = true }
 ucf-backend-cuda = { workspace = true, optional = true }
 ucf-backend-dx12 = { workspace = true, optional = true }
 ucf-backend-vulkan = { workspace = true, optional = true }
+ucf-backend-rocm = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -43,6 +43,12 @@ pub use ucf_backend_cuda as backend_cuda;
 #[cfg(feature = "dx12")]
 pub use ucf_backend_dx12 as backend_dx12;
 
+#[cfg(feature = "vulkan")]
+pub use ucf_backend_vulkan as backend_vulkan;
+
+#[cfg(feature = "rocm")]
+pub use ucf_backend_rocm as backend_rocm;
+
 /// Common imports for application code.
 pub mod prelude {
     pub use crate::{
@@ -61,4 +67,10 @@ pub mod prelude {
 
     #[cfg(feature = "dx12")]
     pub use crate::backend_dx12::Dx12Backend;
+
+    #[cfg(feature = "vulkan")]
+    pub use crate::backend_vulkan::VulkanBackend;
+
+    #[cfg(feature = "rocm")]
+    pub use crate::backend_rocm::RocmBackend;
 }
