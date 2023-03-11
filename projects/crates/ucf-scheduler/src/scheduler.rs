@@ -340,6 +340,45 @@ mod tests {
     }
 
     #[test]
+    fn interactive_120hz_not_starved_by_many_batch() {
+        use crate::{fits_120hz_frame, FRAME_BUDGET_120HZ_MICROS};
+
+        assert!(fits_120hz_frame(FRAME_BUDGET_120HZ_MICROS));
+        assert!(!fits_120hz_frame(FRAME_BUDGET_120HZ_MICROS + 1));
+
+        let mut nodes = vec![task(
+            100,
+            Priority::Interactive,
+            Objective::MinLatency {
+                deadline_micros: FRAME_BUDGET_120HZ_MICROS,
+            },
+        )];
+        for id in 1..=16u64 {
+            nodes.push(task(id, Priority::Batch, Objective::MaxThroughput));
+        }
+        let graph = Graph {
+            resources: ResourceGraph { nodes: vec![] },
+            tasks: TaskGraph {
+                nodes,
+                edges: vec![],
+            },
+        };
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let mut sched = Scheduler::new();
+        sched.register(Box::new(OrderBackend {
+            name: "cpu".into(),
+            order: order.clone(),
+        }));
+        sched.execute(&graph).expect("execute");
+        let submitted = order.lock().unwrap().clone();
+        assert_eq!(
+            submitted[0],
+            TaskId(100),
+            "120 Hz Interactive must run before ready Batch work"
+        );
+    }
+
+    #[test]
     fn tighter_deadline_first_when_same_priority() {
         let graph = Graph {
             resources: ResourceGraph { nodes: vec![] },
