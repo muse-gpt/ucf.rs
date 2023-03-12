@@ -25,12 +25,16 @@ pub use ucf_ir::{
 };
 
 // Capability / optimization
-pub use ucf_capability::{BackendCapabilities, CapabilityReport, Feature, FeatureSet};
+pub use ucf_capability::{
+    pick_descriptor_strategy, pick_pipeline_strategy, pick_sync_strategy, BackendCapabilities,
+    CapabilityReport, DescriptorStrategy, Feature, FeatureSet, PipelineStrategy, SyncStrategy,
+};
 pub use ucf_optimize::{apply, Optimization};
 
 // Scheduler / runtime
 pub use ucf_scheduler::{
-    Backend, Error as SchedulerError, NoopBackend, Result as SchedulerResult, Scheduler,
+    fits_120hz_frame, Backend, Error as SchedulerError, NoopBackend, Result as SchedulerResult,
+    Scheduler, FRAME_BUDGET_120HZ_MICROS,
 };
 pub use ucf_runtime::{dry_run, CapacityPolicy, Runtime};
 
@@ -52,11 +56,13 @@ pub use ucf_backend_rocm as backend_rocm;
 /// Common imports for application code.
 pub mod prelude {
     pub use crate::{
-        apply, decode, encode, Access, Backend, BackendCapabilities, CapacityPolicy, CapabilityReport,
-        chain_edges, DepEdge, DepKind, Dispatch, Domain, dry_run, Feature, FeatureSet, Graph,
-        GraphBuilder, NoopBackend, Objective, Optimization, Priority, ResourceGraph, ResourceId,
-        ResourceKind, ResourceNode, Runtime, Scheduler, ShaderId, TaskGraph, TaskId, TaskKind,
-        TaskNode, UCF_MAGIC, UCF_WIRE_MAJOR,
+        apply, decode, encode, fits_120hz_frame, pick_descriptor_strategy, pick_pipeline_strategy,
+        pick_sync_strategy, Access, Backend, BackendCapabilities, CapacityPolicy, CapabilityReport,
+        chain_edges, DepEdge, DepKind, DescriptorStrategy, Dispatch, Domain, dry_run, Feature,
+        FeatureSet, Graph, GraphBuilder, NoopBackend, Objective, Optimization, PipelineStrategy,
+        Priority, ResourceGraph, ResourceId, ResourceKind, ResourceNode, Runtime, Scheduler,
+        ShaderId, SyncStrategy, TaskGraph, TaskId, TaskKind, TaskNode, FRAME_BUDGET_120HZ_MICROS,
+        UCF_MAGIC, UCF_WIRE_MAJOR,
     };
 
     #[cfg(feature = "cpu")]
