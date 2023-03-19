@@ -1,8 +1,10 @@
 //! Optimization hint descriptors (auto-tune skeleton).
 #![warn(missing_docs)]
 
+mod metrics;
 mod optimization;
 
+pub use metrics::{matmul_flops, MatmulMetrics};
 pub use optimization::Optimization;
 
 use ucf_ir::{Graph, Result};
