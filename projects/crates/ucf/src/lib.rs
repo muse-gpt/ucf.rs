@@ -29,7 +29,9 @@ pub use ucf_capability::{
     pick_descriptor_strategy, pick_pipeline_strategy, pick_sync_strategy, BackendCapabilities,
     CapabilityReport, DescriptorStrategy, Feature, FeatureSet, PipelineStrategy, SyncStrategy,
 };
-pub use ucf_optimize::{apply, matmul_flops, MatmulMetrics, Optimization};
+pub use ucf_optimize::{
+    apply, attention_flops, matmul_flops, AttentionMetrics, MatmulMetrics, Optimization,
+};
 
 // Scheduler / runtime
 pub use ucf_scheduler::{
@@ -56,14 +58,14 @@ pub use ucf_backend_rocm as backend_rocm;
 /// Common imports for application code.
 pub mod prelude {
     pub use crate::{
-        apply, decode, encode, fits_120hz_frame, matmul_flops, pick_descriptor_strategy,
-        pick_pipeline_strategy, pick_sync_strategy, Access, Backend, BackendCapabilities,
-        CapacityPolicy, CapabilityReport, chain_edges, DepEdge, DepKind, DescriptorStrategy,
-        Dispatch, Domain, dry_run, Feature, FeatureSet, Graph, GraphBuilder, MatmulMetrics,
-        NoopBackend, Objective, Optimization, ParamValue, PipelineStrategy, Priority,
-        ResourceGraph, ResourceId, ResourceKind, ResourceNode, Runtime, Scheduler, ShaderId,
-        SyncStrategy, TaskGraph, TaskId, TaskKind, TaskNode, FRAME_BUDGET_120HZ_MICROS,
-        UCF_MAGIC, UCF_WIRE_MAJOR,
+        apply, attention_flops, decode, encode, fits_120hz_frame, matmul_flops,
+        pick_descriptor_strategy, pick_pipeline_strategy, pick_sync_strategy, Access,
+        AttentionMetrics, Backend, BackendCapabilities, CapacityPolicy, CapabilityReport,
+        chain_edges, DepEdge, DepKind, DescriptorStrategy, Dispatch, Domain, dry_run, Feature,
+        FeatureSet, Graph, GraphBuilder, MatmulMetrics, NoopBackend, Objective, Optimization,
+        ParamValue, PipelineStrategy, Priority, ResourceGraph, ResourceId, ResourceKind,
+        ResourceNode, Runtime, Scheduler, ShaderId, SyncStrategy, TaskGraph, TaskId, TaskKind,
+        TaskNode, FRAME_BUDGET_120HZ_MICROS, UCF_MAGIC, UCF_WIRE_MAJOR,
     };
 
     #[cfg(feature = "cpu")]

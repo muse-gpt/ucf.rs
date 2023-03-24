@@ -4,7 +4,7 @@
 mod metrics;
 mod optimization;
 
-pub use metrics::{matmul_flops, MatmulMetrics};
+pub use metrics::{attention_flops, AttentionMetrics, matmul_flops, MatmulMetrics};
 pub use optimization::Optimization;
 
 use ucf_ir::{Graph, Result};
