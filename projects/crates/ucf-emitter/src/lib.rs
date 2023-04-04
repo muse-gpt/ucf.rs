@@ -10,7 +10,7 @@ mod task;
 pub use dxil::{emit_dxil, emit_raster_tri_dxbc, RasterTriDxbc};
 pub use hip::emit_hip;
 pub use ptx::emit_ptx;
-pub use spirv::emit_spirv;
+pub use spirv::{emit_raster_tri_spirv, emit_spirv, RasterTriSpirv};
 pub use task::{needs_kernel, program_from_task};
 
 /// Target ISA for [`EmittedShader::emit`].

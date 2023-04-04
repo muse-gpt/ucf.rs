@@ -1,5 +1,12 @@
 use ucf_types::{ShaderOp, ShaderProgram};
 
+/// SPIR-V module for the Raster triangle thin gate (vertex + fragment entries).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RasterTriSpirv {
+    /// Module bytes containing `vs_main` and `fs_main`.
+    pub module: Vec<u8>,
+}
+
 /// Emit SPIR-V words (as little-endian bytes) for the given UCF program.
 ///
 /// Built-in WGSL is compiled with `naga`. Authors never write shaders.
@@ -16,6 +23,37 @@ pub fn emit_spirv(program: &ShaderProgram) -> Result<Vec<u8>, String> {
         }
     }
     Err("program has no emittable SPIR-V ops".into())
+}
+
+/// Emit a hard-coded NDC yellow triangle (VS+FS) for Raster `draw=tri`.
+pub fn emit_raster_tri_spirv() -> Result<RasterTriSpirv, String> {
+    let wgsl = r#"
+struct VSOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) col: vec4<f32>,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vid: u32) -> VSOut {
+    var verts = array<vec2<f32>, 3>(
+        vec2<f32>(-0.8, -0.8),
+        vec2<f32>( 0.8, -0.8),
+        vec2<f32>( 0.0,  0.8)
+    );
+    var o: VSOut;
+    o.pos = vec4<f32>(verts[vid], 0.0, 1.0);
+    o.col = vec4<f32>(1.0, 1.0, 0.0, 1.0);
+    return o;
+}
+
+@fragment
+fn fs_main(@location(0) col: vec4<f32>) -> @location(0) vec4<f32> {
+    return col;
+}
+"#;
+    Ok(RasterTriSpirv {
+        module: compile_wgsl(wgsl, "vs_main")?,
+    })
 }
 
 fn wgsl_fill(entry: &str, value: f32) -> String {
@@ -121,5 +159,12 @@ mod tests {
         let matmul = emit_spirv(&ShaderProgram::matmul("ucf_matmul")).expect("matmul");
         assert!(matmul.len() > 20);
         assert_eq!(&matmul[0..4], &[0x03, 0x02, 0x23, 0x07]);
+    }
+
+    #[test]
+    fn emit_raster_tri_spirv_module() {
+        let tri = emit_raster_tri_spirv().expect("tri");
+        assert!(tri.module.len() > 20);
+        assert_eq!(&tri.module[0..4], &[0x03, 0x02, 0x23, 0x07]);
     }
 }
