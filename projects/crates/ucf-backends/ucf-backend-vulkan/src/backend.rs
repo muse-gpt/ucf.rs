@@ -3,12 +3,12 @@ use std::collections::BTreeMap;
 use ash::vk;
 use ash::{Device, Entry, Instance};
 use ucf_capability::{Feature, FeatureSet};
-use ucf_emitter::{emit_spirv, program_from_task};
+use ucf_emitter::{emit_raster_tri_spirv, emit_spirv, program_from_task};
 use ucf_ir::{Graph, TaskKind, TaskNode};
 use ucf_scheduler::{Backend, Error as SchedulerError, Result};
 use ucf_types::ResourceId;
 
-use crate::params::{f32_param, resource_param, u32_param, BackendError};
+use crate::params::{f32_param, resource_param, str_param, u32_param, BackendError};
 
 struct DeviceBuffer {
     buffer: vk::Buffer,
@@ -16,7 +16,7 @@ struct DeviceBuffer {
     bytes: usize,
 }
 
-/// Vulkan compute backend with device-resident buffers.
+/// Vulkan compute / graphics backend with device-resident buffers.
 pub struct VulkanBackend {
     _entry: Entry,
     instance: Instance,
@@ -24,6 +24,8 @@ pub struct VulkanBackend {
     device: Device,
     queue: vk::Queue,
     command_pool: vk::CommandPool,
+    /// Queue family supports `GRAPHICS` (required for Raster `draw=tri`).
+    graphics: bool,
     buffers: BTreeMap<ResourceId, DeviceBuffer>,
 }
 
@@ -46,18 +48,28 @@ impl VulkanBackend {
             let physicals = instance
                 .enumerate_physical_devices()
                 .map_err(|e| map_backend_err(BackendError(format!("enumerate devices: {e}"))))?;
-            let (physical, queue_family) = physicals
-                .into_iter()
-                .find_map(|pdev| {
+            let (physical, queue_family, graphics) = physicals
+                .iter()
+                .find_map(|&pdev| {
                     let props = instance.get_physical_device_queue_family_properties(pdev);
                     props.iter().enumerate().find_map(|(i, q)| {
-                        if q.queue_flags.contains(vk::QueueFlags::COMPUTE)
-                            || q.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-                        {
-                            Some((pdev, i as u32))
+                        if q.queue_flags.contains(vk::QueueFlags::GRAPHICS) {
+                            Some((pdev, i as u32, true))
                         } else {
                             None
                         }
+                    })
+                })
+                .or_else(|| {
+                    physicals.iter().find_map(|&pdev| {
+                        let props = instance.get_physical_device_queue_family_properties(pdev);
+                        props.iter().enumerate().find_map(|(i, q)| {
+                            if q.queue_flags.contains(vk::QueueFlags::COMPUTE) {
+                                Some((pdev, i as u32, false))
+                            } else {
+                                None
+                            }
+                        })
                     })
                 })
                 .ok_or_else(|| {
@@ -87,6 +99,7 @@ impl VulkanBackend {
                 device,
                 queue,
                 command_pool,
+                graphics,
                 buffers: BTreeMap::new(),
             })
         }
@@ -391,9 +404,10 @@ impl VulkanBackend {
         )
     }
 
-    /// Clear an R8G8B8A8 image and copy packed pixels into buffer `dst`.
+    /// Rasterize into an R8G8B8A8 image and copy packed pixels into buffer `dst`.
     ///
-    /// Params: `dst`, `width`, `height`, optional `r`/`g`/`b`/`a` in `0..1`.
+    /// Params: `dst`, `width`, `height`, optional `r`/`g`/`b`/`a` in `0..1`,
+    /// optional `draw` = `clear` (default) or `tri` (yellow NDC triangle after clear).
     fn run_raster(&mut self, task: &TaskNode) -> Result<()> {
         let dst = resource_param(task, "dst").map_err(map_backend_err)?;
         let width = u32_param(task, "width").map_err(map_backend_err)?;
@@ -401,6 +415,17 @@ impl VulkanBackend {
         if width == 0 || height == 0 {
             return Err(map_backend_err(BackendError(
                 "raster width/height must be > 0".into(),
+            )));
+        }
+        let draw = str_param(task, "draw").unwrap_or("clear");
+        if draw != "clear" && draw != "tri" {
+            return Err(map_backend_err(BackendError(format!(
+                "raster draw must be `clear` or `tri`, got `{draw}`"
+            ))));
+        }
+        if draw == "tri" && !self.graphics {
+            return Err(map_backend_err(BackendError(
+                "raster draw=tri requires a graphics queue".into(),
             )));
         }
         let r = f32_param(task, "r").unwrap_or(0.0);
@@ -419,6 +444,21 @@ impl VulkanBackend {
             ))));
         }
 
+        if draw == "tri" {
+            self.run_raster_tri(dst, width, height, need, [r, g, b, a])
+        } else {
+            self.run_raster_clear(dst, width, height, need, [r, g, b, a])
+        }
+    }
+
+    fn run_raster_clear(
+        &mut self,
+        dst: ResourceId,
+        width: u32,
+        height: u32,
+        need: usize,
+        color: [f32; 4],
+    ) -> Result<()> {
         unsafe {
             let (image, image_mem) = self.create_image(
                 width,
@@ -457,9 +497,7 @@ impl VulkanBackend {
                     &[],
                     std::slice::from_ref(&to_dst),
                 );
-                let clear = vk::ClearColorValue {
-                    float32: [r, g, b, a],
-                };
+                let clear = vk::ClearColorValue { float32: color };
                 self.device.cmd_clear_color_image(
                     cmd,
                     image,
@@ -511,13 +549,259 @@ impl VulkanBackend {
                 );
             })?;
 
-            let mut pixels = vec![0u8; need];
-            let ptr = self
+            let pixels = self.map_staging_pixels(staging_mem, need)?;
+            self.device.destroy_buffer(staging, None);
+            self.device.free_memory(staging_mem, None);
+            self.device.destroy_image(image, None);
+            self.device.free_memory(image_mem, None);
+            self.upload(dst, &pixels)
+        }
+    }
+
+    fn run_raster_tri(
+        &mut self,
+        dst: ResourceId,
+        width: u32,
+        height: u32,
+        need: usize,
+        clear_color: [f32; 4],
+    ) -> Result<()> {
+        let spirv = emit_raster_tri_spirv().map_err(map_emit_err)?;
+        unsafe {
+            let (image, image_mem) = self.create_image(
+                width,
+                height,
+                vk::ImageUsageFlags::COLOR_ATTACHMENT
+                    | vk::ImageUsageFlags::TRANSFER_SRC
+                    | vk::ImageUsageFlags::TRANSFER_DST,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )?;
+            let view_info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::R8G8B8A8_UNORM)
+                .subresource_range(
+                    vk::ImageSubresourceRange::default()
+                        .aspect_mask(vk::ImageAspectFlags::COLOR)
+                        .base_mip_level(0)
+                        .level_count(1)
+                        .base_array_layer(0)
+                        .layer_count(1),
+                );
+            let view = self
                 .device
-                .map_memory(staging_mem, 0, need as u64, vk::MemoryMapFlags::empty())
+                .create_image_view(&view_info, None)
                 .map_err(vk_err)?;
-            std::ptr::copy_nonoverlapping(ptr.cast(), pixels.as_mut_ptr(), need);
-            self.device.unmap_memory(staging_mem);
+
+            let attachment = vk::AttachmentDescription::default()
+                .format(vk::Format::R8G8B8A8_UNORM)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .load_op(vk::AttachmentLoadOp::CLEAR)
+                .store_op(vk::AttachmentStoreOp::STORE)
+                .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+                .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+                .initial_layout(vk::ImageLayout::UNDEFINED)
+                .final_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL);
+            let color_ref = vk::AttachmentReference::default()
+                .attachment(0)
+                .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+            let subpass = vk::SubpassDescription::default()
+                .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)
+                .color_attachments(std::slice::from_ref(&color_ref));
+            let dependency = vk::SubpassDependency::default()
+                .src_subpass(vk::SUBPASS_EXTERNAL)
+                .dst_subpass(0)
+                .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+                .dst_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE);
+            let rp_info = vk::RenderPassCreateInfo::default()
+                .attachments(std::slice::from_ref(&attachment))
+                .subpasses(std::slice::from_ref(&subpass))
+                .dependencies(std::slice::from_ref(&dependency));
+            let render_pass = self
+                .device
+                .create_render_pass(&rp_info, None)
+                .map_err(vk_err)?;
+
+            let fb_attachments = [view];
+            let fb_info = vk::FramebufferCreateInfo::default()
+                .render_pass(render_pass)
+                .attachments(&fb_attachments)
+                .width(width)
+                .height(height)
+                .layers(1);
+            let framebuffer = self
+                .device
+                .create_framebuffer(&fb_info, None)
+                .map_err(vk_err)?;
+
+            let words: Vec<u32> = spirv
+                .module
+                .chunks_exact(4)
+                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            let module_info = vk::ShaderModuleCreateInfo::default().code(&words);
+            let module = self
+                .device
+                .create_shader_module(&module_info, None)
+                .map_err(vk_err)?;
+            let vs_name = std::ffi::CString::new("vs_main").unwrap();
+            let fs_name = std::ffi::CString::new("fs_main").unwrap();
+            let stages = [
+                vk::PipelineShaderStageCreateInfo::default()
+                    .stage(vk::ShaderStageFlags::VERTEX)
+                    .module(module)
+                    .name(&vs_name),
+                vk::PipelineShaderStageCreateInfo::default()
+                    .stage(vk::ShaderStageFlags::FRAGMENT)
+                    .module(module)
+                    .name(&fs_name),
+            ];
+            let vertex_input = vk::PipelineVertexInputStateCreateInfo::default();
+            let input_assembly = vk::PipelineInputAssemblyStateCreateInfo::default()
+                .topology(vk::PrimitiveTopology::TRIANGLE_LIST);
+            let viewport = vk::Viewport {
+                x: 0.0,
+                y: 0.0,
+                width: width as f32,
+                height: height as f32,
+                min_depth: 0.0,
+                max_depth: 1.0,
+            };
+            let scissor = vk::Rect2D {
+                offset: vk::Offset2D { x: 0, y: 0 },
+                extent: vk::Extent2D { width, height },
+            };
+            let viewport_state = vk::PipelineViewportStateCreateInfo::default()
+                .viewports(std::slice::from_ref(&viewport))
+                .scissors(std::slice::from_ref(&scissor));
+            let raster = vk::PipelineRasterizationStateCreateInfo::default()
+                .polygon_mode(vk::PolygonMode::FILL)
+                .cull_mode(vk::CullModeFlags::NONE)
+                .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+                .line_width(1.0);
+            let multisample = vk::PipelineMultisampleStateCreateInfo::default()
+                .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+            let color_blend_attachment = vk::PipelineColorBlendAttachmentState::default()
+                .color_write_mask(vk::ColorComponentFlags::RGBA)
+                .blend_enable(false);
+            let color_blend = vk::PipelineColorBlendStateCreateInfo::default()
+                .attachments(std::slice::from_ref(&color_blend_attachment));
+            let layout_info = vk::PipelineLayoutCreateInfo::default();
+            let pipeline_layout = self
+                .device
+                .create_pipeline_layout(&layout_info, None)
+                .map_err(vk_err)?;
+            let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+                .stages(&stages)
+                .vertex_input_state(&vertex_input)
+                .input_assembly_state(&input_assembly)
+                .viewport_state(&viewport_state)
+                .rasterization_state(&raster)
+                .multisample_state(&multisample)
+                .color_blend_state(&color_blend)
+                .layout(pipeline_layout)
+                .render_pass(render_pass)
+                .subpass(0);
+            let pipelines = self
+                .device
+                .create_graphics_pipelines(
+                    vk::PipelineCache::null(),
+                    std::slice::from_ref(&pipeline_info),
+                    None,
+                )
+                .map_err(|(_, e)| vk_err(e))?;
+            let pipeline = pipelines[0];
+
+            let (staging, staging_mem) = self.create_buffer(
+                need,
+                vk::BufferUsageFlags::TRANSFER_DST,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            )?;
+
+            self.with_commands(|cmd| {
+                let clear = vk::ClearValue {
+                    color: vk::ClearColorValue {
+                        float32: clear_color,
+                    },
+                };
+                let begin_info = vk::RenderPassBeginInfo::default()
+                    .render_pass(render_pass)
+                    .framebuffer(framebuffer)
+                    .render_area(vk::Rect2D {
+                        offset: vk::Offset2D { x: 0, y: 0 },
+                        extent: vk::Extent2D { width, height },
+                    })
+                    .clear_values(std::slice::from_ref(&clear));
+                self.device.cmd_begin_render_pass(
+                    cmd,
+                    &begin_info,
+                    vk::SubpassContents::INLINE,
+                );
+                self.device
+                    .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
+                self.device.cmd_draw(cmd, 3, 1, 0, 0);
+                self.device.cmd_end_render_pass(cmd);
+
+                let range = vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1);
+                let to_transfer = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::COLOR_ATTACHMENT_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .old_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(image)
+                    .subresource_range(range);
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    std::slice::from_ref(&to_transfer),
+                );
+
+                let region = vk::BufferImageCopy::default()
+                    .buffer_offset(0)
+                    .buffer_row_length(0)
+                    .buffer_image_height(0)
+                    .image_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .mip_level(0)
+                            .base_array_layer(0)
+                            .layer_count(1),
+                    )
+                    .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                    .image_extent(vk::Extent3D {
+                        width,
+                        height,
+                        depth: 1,
+                    });
+                self.device.cmd_copy_image_to_buffer(
+                    cmd,
+                    image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    staging,
+                    std::slice::from_ref(&region),
+                );
+            })?;
+
+            let pixels = self.map_staging_pixels(staging_mem, need)?;
+
+            self.device.destroy_pipeline(pipeline, None);
+            self.device.destroy_pipeline_layout(pipeline_layout, None);
+            self.device.destroy_shader_module(module, None);
+            self.device.destroy_framebuffer(framebuffer, None);
+            self.device.destroy_render_pass(render_pass, None);
+            self.device.destroy_image_view(view, None);
             self.device.destroy_buffer(staging, None);
             self.device.free_memory(staging_mem, None);
             self.device.destroy_image(image, None);
@@ -525,6 +809,21 @@ impl VulkanBackend {
 
             self.upload(dst, &pixels)
         }
+    }
+
+    unsafe fn map_staging_pixels(
+        &self,
+        staging_mem: vk::DeviceMemory,
+        need: usize,
+    ) -> Result<Vec<u8>> {
+        let mut pixels = vec![0u8; need];
+        let ptr = self
+            .device
+            .map_memory(staging_mem, 0, need as u64, vk::MemoryMapFlags::empty())
+            .map_err(vk_err)?;
+        std::ptr::copy_nonoverlapping(ptr.cast(), pixels.as_mut_ptr(), need);
+        self.device.unmap_memory(staging_mem);
+        Ok(pixels)
     }
 
     fn dispatch_compute(
