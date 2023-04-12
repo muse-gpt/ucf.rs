@@ -3,9 +3,11 @@
 
 mod metrics;
 mod optimization;
+mod perf;
 
 pub use metrics::{attention_flops, AttentionMetrics, matmul_flops, MatmulMetrics};
 pub use optimization::Optimization;
+pub use perf::{BackendPerfRow, PerfReport, TimedSample};
 
 use ucf_ir::{Graph, Result};
 

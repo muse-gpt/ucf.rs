@@ -30,7 +30,8 @@ pub use ucf_capability::{
     CapabilityReport, DescriptorStrategy, Feature, FeatureSet, PipelineStrategy, SyncStrategy,
 };
 pub use ucf_optimize::{
-    apply, attention_flops, matmul_flops, AttentionMetrics, MatmulMetrics, Optimization,
+    apply, attention_flops, matmul_flops, AttentionMetrics, BackendPerfRow, MatmulMetrics,
+    Optimization, PerfReport, TimedSample,
 };
 
 // Scheduler / runtime
@@ -60,12 +61,13 @@ pub mod prelude {
     pub use crate::{
         apply, attention_flops, decode, encode, fits_120hz_frame, matmul_flops,
         pick_descriptor_strategy, pick_pipeline_strategy, pick_sync_strategy, Access,
-        AttentionMetrics, Backend, BackendCapabilities, CapacityPolicy, CapabilityReport,
-        chain_edges, DepEdge, DepKind, DescriptorStrategy, Dispatch, Domain, dry_run, Feature,
-        FeatureSet, Graph, GraphBuilder, MatmulMetrics, NoopBackend, Objective, Optimization,
-        ParamValue, PipelineStrategy, Priority, ResourceGraph, ResourceId, ResourceKind,
-        ResourceNode, Runtime, Scheduler, ShaderId, SyncStrategy, TaskGraph, TaskId, TaskKind,
-        TaskNode, FRAME_BUDGET_120HZ_MICROS, UCF_MAGIC, UCF_WIRE_MAJOR,
+        AttentionMetrics, Backend, BackendCapabilities, BackendPerfRow, CapacityPolicy,
+        CapabilityReport, chain_edges, DepEdge, DepKind, DescriptorStrategy, Dispatch, Domain,
+        dry_run, Feature, FeatureSet, Graph, GraphBuilder, MatmulMetrics, NoopBackend, Objective,
+        Optimization, ParamValue, PerfReport, PipelineStrategy, Priority, ResourceGraph,
+        ResourceId, ResourceKind, ResourceNode, Runtime, Scheduler, ShaderId, SyncStrategy,
+        TaskGraph, TaskId, TaskKind, TaskNode, TimedSample, FRAME_BUDGET_120HZ_MICROS, UCF_MAGIC,
+        UCF_WIRE_MAJOR,
     };
 
     #[cfg(feature = "cpu")]
