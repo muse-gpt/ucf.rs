@@ -20,6 +20,9 @@ pub fn emit_spirv(program: &ShaderProgram) -> Result<Vec<u8>, String> {
             ShaderOp::MatMul => {
                 return compile_wgsl(&wgsl_matmul(&program.entry), &program.entry);
             }
+            ShaderOp::Rgba8Denoise => {
+                return Err("RGBA8 denoise is CUDA-only in this thin gate".into());
+            }
         }
     }
     Err("program has no emittable SPIR-V ops".into())

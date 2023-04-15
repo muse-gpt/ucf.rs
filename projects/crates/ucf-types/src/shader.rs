@@ -15,6 +15,8 @@ pub enum ShaderOp {
     MatMul,
     /// Host/device copy without a kernel body
     MemCopy,
+    /// RGBA8 spatial denoise: horizontal RGB mean with left neighbor, A passthrough
+    Rgba8Denoise,
 }
 
 impl ShaderProgram {
@@ -36,6 +38,13 @@ impl ShaderProgram {
         Self {
             entry: entry.into(),
             ops: vec![ShaderOp::MemCopy],
+        }
+    }
+
+    pub fn rgba8_denoise(entry: impl Into<String>) -> Self {
+        Self {
+            entry: entry.into(),
+            ops: vec![ShaderOp::Rgba8Denoise],
         }
     }
 }

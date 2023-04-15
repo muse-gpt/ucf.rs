@@ -23,6 +23,9 @@ pub fn emit_dxil(program: &ShaderProgram) -> Result<Vec<u8>, String> {
             ShaderOp::MatMul => {
                 return compile_shader(&hlsl_matmul(&program.entry), &program.entry, "cs_5_1");
             }
+            ShaderOp::Rgba8Denoise => {
+                return Err("RGBA8 denoise is CUDA-only in this thin gate".into());
+            }
         }
     }
     Err("program has no emittable DXIL ops".into())
