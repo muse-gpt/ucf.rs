@@ -209,6 +209,31 @@ impl CudaDriver {
         self.launch(func, grid, block, &mut params)
     }
 
+    /// Launch RGBA8 denoise: `(src, out, width, height)`.
+    pub fn launch_rgba8_denoise(
+        &self,
+        func: CUfunction,
+        src: CUdeviceptr,
+        out: CUdeviceptr,
+        width: u32,
+        height: u32,
+    ) -> Result<(), DriverError> {
+        let total = width.saturating_mul(height).max(1);
+        let block = 256u32;
+        let grid = total.saturating_add(block - 1) / block;
+        let mut src_arg = src;
+        let mut out_arg = out;
+        let mut width_arg = width;
+        let mut height_arg = height;
+        let mut params: [*mut c_void; 4] = [
+            (&mut src_arg as *mut CUdeviceptr).cast(),
+            (&mut out_arg as *mut CUdeviceptr).cast(),
+            (&mut width_arg as *mut u32).cast(),
+            (&mut height_arg as *mut u32).cast(),
+        ];
+        self.launch(func, grid, block, &mut params)
+    }
+
     fn launch(
         &self,
         func: CUfunction,
