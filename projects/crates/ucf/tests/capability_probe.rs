@@ -28,7 +28,18 @@ fn probe_available_backends_into_capability_report() {
         Err(err) => eprintln!("skip cuda capability probe: {err}"),
     }
     match RocmBackend::new(0) {
-        Ok(b) => rows.push((b.name().into(), b.features())),
+        Ok(b) => {
+            let feats = b.features();
+            assert!(
+                feats.has(ucf_capability::Feature::MatrixCore),
+                "ROCm must expose MatrixCore"
+            );
+            assert!(
+                feats.has(ucf_capability::Feature::HipGraph),
+                "ROCm must expose HipGraph"
+            );
+            rows.push((b.name().into(), feats));
+        }
         Err(err) => eprintln!("skip rocm capability probe: {err}"),
     }
 
