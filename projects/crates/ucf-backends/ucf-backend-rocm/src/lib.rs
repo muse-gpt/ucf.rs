@@ -1,4 +1,4 @@
-//! ROCm / HIP backend (`amdhip64` + `hiprtc`).
+//! ROCm / HIP backend (`amdhip64` + emitter HSACO).
 #![warn(missing_docs)]
 
 mod backend;

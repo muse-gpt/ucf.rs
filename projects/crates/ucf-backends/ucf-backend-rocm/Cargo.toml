@@ -1,6 +1,6 @@
 [package]
 name = "ucf-backend-rocm"
-description = "ROCm / HIP backend for UCF (HIP source via ucf-emitter + hiprtc)"
+description = "ROCm / HIP backend for UCF (HSACO via ucf-emitter, no hiprtc)"
 readme = "readme.md"
 version.workspace = true
 edition.workspace = true

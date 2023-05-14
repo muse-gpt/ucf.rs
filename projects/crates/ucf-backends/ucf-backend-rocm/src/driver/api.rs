@@ -18,10 +18,9 @@ macro_rules! load_fn {
     }};
 }
 
-/// HIP Runtime + `hiprtc` handles owned by the ROCm backend.
+/// HIP runtime handles owned by the ROCm backend (no `hiprtc`).
 pub struct HipDriver {
     _runtime: Library,
-    _rtc: Library,
     hipMalloc: HipMalloc,
     hipFree: HipFree,
     hipMemcpy: HipMemcpy,
@@ -30,20 +29,12 @@ pub struct HipDriver {
     hipModuleUnload: HipModuleUnload,
     hipModuleGetFunction: HipModuleGetFunction,
     hipModuleLaunchKernel: HipModuleLaunchKernel,
-    hiprtcCreateProgram: HiprtcCreateProgram,
-    hiprtcCompileProgram: HiprtcCompileProgram,
-    hiprtcGetCodeSize: HiprtcGetCodeSize,
-    hiprtcGetCode: HiprtcGetCode,
-    hiprtcDestroyProgram: HiprtcDestroyProgram,
-    hiprtcGetProgramLogSize: HiprtcGetProgramLogSize,
-    hiprtcGetProgramLog: HiprtcGetProgramLog,
 }
 
 impl HipDriver {
-    /// Load HIP runtime / rtc libraries and select `device_index`.
+    /// Load HIP runtime and select `device_index`.
     pub fn new(device_index: u32) -> Result<Self, DriverError> {
         let runtime = load_first(&runtime_library_candidates())?;
-        let rtc = load_first(&rtc_library_candidates())?;
 
         unsafe {
             let hipGetDeviceCount = load_fn!(runtime, hipGetDeviceCount, HipGetDeviceCount);
@@ -60,15 +51,6 @@ impl HipDriver {
             let hipModuleLaunchKernel =
                 load_fn!(runtime, hipModuleLaunchKernel, HipModuleLaunchKernel);
 
-            let hiprtcCreateProgram = load_fn!(rtc, hiprtcCreateProgram, HiprtcCreateProgram);
-            let hiprtcCompileProgram = load_fn!(rtc, hiprtcCompileProgram, HiprtcCompileProgram);
-            let hiprtcGetCodeSize = load_fn!(rtc, hiprtcGetCodeSize, HiprtcGetCodeSize);
-            let hiprtcGetCode = load_fn!(rtc, hiprtcGetCode, HiprtcGetCode);
-            let hiprtcDestroyProgram = load_fn!(rtc, hiprtcDestroyProgram, HiprtcDestroyProgram);
-            let hiprtcGetProgramLogSize =
-                load_fn!(rtc, hiprtcGetProgramLogSize, HiprtcGetProgramLogSize);
-            let hiprtcGetProgramLog = load_fn!(rtc, hiprtcGetProgramLog, HiprtcGetProgramLog);
-
             let mut count = 0i32;
             check_hip((hipGetDeviceCount)(&mut count), "hipGetDeviceCount")?;
             if count <= 0 {
@@ -84,7 +66,6 @@ impl HipDriver {
 
             Ok(Self {
                 _runtime: runtime,
-                _rtc: rtc,
                 hipMalloc,
                 hipFree,
                 hipMemcpy,
@@ -93,13 +74,6 @@ impl HipDriver {
                 hipModuleUnload,
                 hipModuleGetFunction,
                 hipModuleLaunchKernel,
-                hiprtcCreateProgram,
-                hiprtcCompileProgram,
-                hiprtcGetCodeSize,
-                hiprtcGetCode,
-                hiprtcDestroyProgram,
-                hiprtcGetProgramLogSize,
-                hiprtcGetProgramLog,
             })
         }
     }
@@ -119,13 +93,13 @@ impl HipDriver {
         Ok(())
     }
 
-    pub fn memcpy_htod(&self, dst: HipDeviceptr, src: &[u8]) -> Result<(), DriverError> {
+    pub fn memcpy_htod(&self, dst: HipDeviceptr, host: &[u8]) -> Result<(), DriverError> {
         unsafe {
             check_hip(
                 (self.hipMemcpy)(
                     dst,
-                    src.as_ptr().cast(),
-                    src.len(),
+                    host.as_ptr().cast(),
+                    host.len(),
                     HIP_MEMCPY_HOST_TO_DEVICE,
                 ),
                 "hipMemcpy HtoD",
@@ -134,13 +108,13 @@ impl HipDriver {
         Ok(())
     }
 
-    pub fn memcpy_dtoh(&self, dst: &mut [u8], src: HipDeviceptr) -> Result<(), DriverError> {
+    pub fn memcpy_dtoh(&self, host: &mut [u8], src: HipDeviceptr) -> Result<(), DriverError> {
         unsafe {
             check_hip(
                 (self.hipMemcpy)(
-                    dst.as_mut_ptr().cast(),
+                    host.as_mut_ptr().cast(),
                     src,
-                    dst.len(),
+                    host.len(),
                     HIP_MEMCPY_DEVICE_TO_HOST,
                 ),
                 "hipMemcpy DtoH",
@@ -164,50 +138,16 @@ impl HipDriver {
         Ok(())
     }
 
-    /// Compile HIP source with `hiprtc` and load as a module.
-    pub fn compile_module(&self, hip_source: &[u8]) -> Result<HipModule, DriverError> {
+    /// Load an emitter-produced HSACO / ELF code object.
+    pub fn load_module(&self, hsaco: &[u8]) -> Result<HipModule, DriverError> {
+        let mut module: HipModule = std::ptr::null_mut();
         unsafe {
-            let mut prog: HiprtcProgram = std::ptr::null_mut();
-            let name = CString::new("ucf.hip").unwrap();
-            check_rtc(
-                (self.hiprtcCreateProgram)(
-                    &mut prog,
-                    hip_source.as_ptr().cast(),
-                    name.as_ptr(),
-                    0,
-                    std::ptr::null(),
-                    std::ptr::null(),
-                ),
-                "hiprtcCreateProgram",
-            )?;
-            let compile = (self.hiprtcCompileProgram)(prog, 0, std::ptr::null());
-            if compile != HIPRTC_SUCCESS {
-                let log = self.rtc_log(prog).unwrap_or_default();
-                let _ = (self.hiprtcDestroyProgram)(&mut prog);
-                return Err(DriverError::new(
-                    compile,
-                    format!("hiprtcCompileProgram failed: {log}"),
-                ));
-            }
-            let mut size = 0usize;
-            check_rtc(
-                (self.hiprtcGetCodeSize)(prog, &mut size),
-                "hiprtcGetCodeSize",
-            )?;
-            let mut code = vec![0i8; size];
-            check_rtc(
-                (self.hiprtcGetCode)(prog, code.as_mut_ptr()),
-                "hiprtcGetCode",
-            )?;
-            let _ = (self.hiprtcDestroyProgram)(&mut prog);
-
-            let mut module: HipModule = std::ptr::null_mut();
             check_hip(
-                (self.hipModuleLoadData)(&mut module, code.as_ptr().cast()),
+                (self.hipModuleLoadData)(&mut module, hsaco.as_ptr().cast()),
                 "hipModuleLoadData",
             )?;
-            Ok(module)
         }
+        Ok(module)
     }
 
     pub fn unload_module(&self, module: HipModule) -> Result<(), DriverError> {
@@ -304,27 +244,6 @@ impl HipDriver {
         }
         Ok(())
     }
-
-    unsafe fn rtc_log(&self, prog: HiprtcProgram) -> Result<String, DriverError> {
-        let mut size = 0usize;
-        check_rtc(
-            (self.hiprtcGetProgramLogSize)(prog, &mut size),
-            "hiprtcGetProgramLogSize",
-        )?;
-        if size == 0 {
-            return Ok(String::new());
-        }
-        let mut buf = vec![0i8; size];
-        check_rtc(
-            (self.hiprtcGetProgramLog)(prog, buf.as_mut_ptr()),
-            "hiprtcGetProgramLog",
-        )?;
-        Ok(String::from_utf8_lossy(std::slice::from_raw_parts(
-            buf.as_ptr().cast(),
-            size.saturating_sub(1),
-        ))
-        .into_owned())
-    }
 }
 
 unsafe impl Send for HipDriver {}
@@ -332,14 +251,6 @@ unsafe impl Sync for HipDriver {}
 
 fn check_hip(code: HipError, api: &str) -> Result<(), DriverError> {
     if code == HIP_SUCCESS {
-        Ok(())
-    } else {
-        Err(DriverError::new(code, api))
-    }
-}
-
-fn check_rtc(code: HiprtcResult, api: &str) -> Result<(), DriverError> {
-    if code == HIPRTC_SUCCESS {
         Ok(())
     } else {
         Err(DriverError::new(code, api))
@@ -369,24 +280,6 @@ fn runtime_library_candidates() -> Vec<std::path::PathBuf> {
         vec![
             Path::new("libamdhip64.so").to_path_buf(),
             Path::new("libamdhip64.so.6").to_path_buf(),
-        ]
-    }
-}
-
-fn rtc_library_candidates() -> Vec<std::path::PathBuf> {
-    if cfg!(target_os = "windows") {
-        vec![
-            Path::new("hiprtc.dll").to_path_buf(),
-            Path::new("hiprtc0605.dll").to_path_buf(),
-            Path::new("hiprtc0604.dll").to_path_buf(),
-            Path::new("hiprtc0600.dll").to_path_buf(),
-            Path::new("amdhip64.dll").to_path_buf(),
-        ]
-    } else {
-        vec![
-            Path::new("libhiprtc.so").to_path_buf(),
-            Path::new("libhiprtc.so.6").to_path_buf(),
-            Path::new("libamdhip64.so").to_path_buf(),
         ]
     }
 }
