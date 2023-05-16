@@ -26,6 +26,9 @@ pub fn emit_dxil(program: &ShaderProgram) -> Result<Vec<u8>, String> {
             ShaderOp::Rgba8Denoise => {
                 return Err("RGBA8 denoise is CUDA-only in this thin gate".into());
             }
+            ShaderOp::Attention => {
+                return Err("Attention HSACO/PTX path is not emitted as DXIL".into());
+            }
         }
     }
     Err("program has no emittable DXIL ops".into())

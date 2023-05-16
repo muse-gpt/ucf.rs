@@ -20,6 +20,9 @@ pub fn program_from_task(task: &TaskNode) -> ShaderProgram {
         TaskKind::Custom(name) if name == "denoise" => {
             ShaderProgram::rgba8_denoise("ucf_denoise")
         }
+        TaskKind::Custom(name) if name == "attention" => {
+            ShaderProgram::attention("ucf_attention")
+        }
         TaskKind::Dispatch | TaskKind::Custom(_) => {
             ShaderProgram::dispatch_fill("ucf_dispatch", 1.0)
         }
@@ -34,7 +37,10 @@ pub fn needs_kernel(program: &ShaderProgram) -> bool {
     program.ops.iter().any(|op| {
         matches!(
             op,
-            ShaderOp::IotaFill { .. } | ShaderOp::MatMul | ShaderOp::Rgba8Denoise
+            ShaderOp::IotaFill { .. }
+                | ShaderOp::MatMul
+                | ShaderOp::Rgba8Denoise
+                | ShaderOp::Attention
         )
     })
 }
