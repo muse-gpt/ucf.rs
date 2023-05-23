@@ -216,6 +216,47 @@ impl HipDriver {
         self.launch(func, grid, block, &mut params)
     }
 
+    /// Launch attention: `(q, k, v, out, batch, heads, seq, dim)`.
+    pub fn launch_attention(
+        &self,
+        func: HipFunction,
+        q: HipDeviceptr,
+        k: HipDeviceptr,
+        v: HipDeviceptr,
+        out: HipDeviceptr,
+        batch: u32,
+        heads: u32,
+        seq: u32,
+        dim: u32,
+    ) -> Result<(), DriverError> {
+        let total = batch
+            .saturating_mul(heads)
+            .saturating_mul(seq)
+            .saturating_mul(dim)
+            .max(1);
+        let block = 256u32;
+        let grid = total.div_ceil(block).max(1);
+        let mut q_arg = q;
+        let mut k_arg = k;
+        let mut v_arg = v;
+        let mut out_arg = out;
+        let mut batch_arg = batch;
+        let mut heads_arg = heads;
+        let mut seq_arg = seq;
+        let mut dim_arg = dim;
+        let mut params: [*mut c_void; 8] = [
+            (&mut q_arg as *mut HipDeviceptr).cast(),
+            (&mut k_arg as *mut HipDeviceptr).cast(),
+            (&mut v_arg as *mut HipDeviceptr).cast(),
+            (&mut out_arg as *mut HipDeviceptr).cast(),
+            (&mut batch_arg as *mut u32).cast(),
+            (&mut heads_arg as *mut u32).cast(),
+            (&mut seq_arg as *mut u32).cast(),
+            (&mut dim_arg as *mut u32).cast(),
+        ];
+        self.launch(func, grid, block, &mut params)
+    }
+
     fn launch(
         &self,
         func: HipFunction,

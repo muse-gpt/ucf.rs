@@ -165,6 +165,48 @@ impl RocmBackend {
         let _ = self.driver.unload_module(module);
         result
     }
+
+    fn run_attention(&mut self, task: &TaskNode) -> Result<()> {
+        let q = resource_param(task, "q").map_err(map_backend_err)?;
+        let k = resource_param(task, "k").map_err(map_backend_err)?;
+        let v = resource_param(task, "v").map_err(map_backend_err)?;
+        let out = resource_param(task, "out").map_err(map_backend_err)?;
+        let batch = u32_param(task, "batch").map_err(map_backend_err)?;
+        let heads = u32_param(task, "heads").map_err(map_backend_err)?;
+        let seq = u32_param(task, "seq").map_err(map_backend_err)?;
+        let dim = u32_param(task, "dim").map_err(map_backend_err)?;
+        let elems = (batch as usize)
+            .checked_mul(heads as usize)
+            .and_then(|n| n.checked_mul(seq as usize))
+            .and_then(|n| n.checked_mul(dim as usize))
+            .ok_or_else(|| map_backend_err(BackendError("attention size overflow".into())))?;
+        let need = elems
+            .checked_mul(4)
+            .ok_or_else(|| map_backend_err(BackendError("attention byte size overflow".into())))?;
+        let (q_ptr, q_bytes) = self.ptr(q)?;
+        let (k_ptr, k_bytes) = self.ptr(k)?;
+        let (v_ptr, v_bytes) = self.ptr(v)?;
+        let (out_ptr, out_bytes) = self.ptr(out)?;
+        expect_bytes(q, q_bytes, need)?;
+        expect_bytes(k, k_bytes, need)?;
+        expect_bytes(v, v_bytes, need)?;
+        expect_bytes(out, out_bytes, need)?;
+
+        let program = program_from_task(task);
+        let hsaco = emit_hsaco(&program).map_err(map_emit_err)?;
+        let module = self.driver.load_module(&hsaco).map_err(map_driver_err)?;
+        let result = (|| {
+            let func = self
+                .driver
+                .get_function(module, &program.entry)
+                .map_err(map_driver_err)?;
+            self.driver
+                .launch_attention(func, q_ptr, k_ptr, v_ptr, out_ptr, batch, heads, seq, dim)
+                .map_err(map_driver_err)
+        })();
+        let _ = self.driver.unload_module(module);
+        result
+    }
 }
 
 impl Drop for RocmBackend {
@@ -226,6 +268,7 @@ impl Backend for RocmBackend {
             TaskKind::Copy => self.run_copy(task),
             TaskKind::Fill => self.run_fill(task),
             TaskKind::MatMul => self.run_matmul(task),
+            TaskKind::Custom(name) if name == "attention" => self.run_attention(task),
             TaskKind::Raster | TaskKind::RtTrace => Err(map_backend_err(BackendError(
                 "raster and ray tracing are not supported on HIP".into(),
             ))),
