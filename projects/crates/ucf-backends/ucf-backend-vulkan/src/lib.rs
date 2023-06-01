@@ -4,4 +4,4 @@
 mod backend;
 mod params;
 
-pub use backend::{VulkanBackend, WiredStrategies};
+pub use backend::VulkanBackend;
