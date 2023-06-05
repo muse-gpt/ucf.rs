@@ -7,6 +7,7 @@ DirectX 12 backend via raw **D3D12** API (`windows` crate).
 - `Fill` / `MatMul` compute from [`ucf-emitter`](../../ucf-emitter/) DXBC (`cs_5_1`)
 - `Raster` thin gate: RT clear / optional `draw=tri` yellow triangle → packed `RGBA8` (`read_u8`)
 - Windows only (`stub` on other targets)
+- Degrade wiring: `strategies()` / `last_*_path` from `FeatureSet` picks (`ucf` `tests/dx12_degrade_wire.rs`)
 
 Parity: `tests/parity_cpu.rs` soft-skips when no D3D12 device is available.
 Raster: `tests/raster_clear.rs`, `tests/raster_tri.rs` soft-skip the same way.

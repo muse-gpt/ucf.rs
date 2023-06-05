@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use ucf_capability::{Feature, FeatureSet};
+use ucf_capability::{Feature, FeatureSet, WiredStrategies};
 use ucf_emitter::{emit_dxil, emit_raster_tri_dxbc, program_from_task};
 use ucf_ir::Graph;
 use ucf_scheduler::{Backend, Error as SchedulerError, Result};
@@ -74,6 +74,13 @@ pub struct Dx12Backend {
     buffers: BTreeMap<ResourceId, DeviceBuffer>,
     shared: BTreeMap<SharedBufferId, SharedBuffer>,
     next_shared: u64,
+    strategies: WiredStrategies,
+    /// Last descriptor path label taken by a submit (for thin-gate assertions).
+    last_descriptor_path: &'static str,
+    /// Last sync path label taken by a submit (for thin-gate assertions).
+    last_sync_path: &'static str,
+    /// Last pipeline path label taken by a submit (for thin-gate assertions).
+    last_pipeline_path: &'static str,
 }
 
 impl Dx12Backend {
@@ -108,6 +115,13 @@ impl Dx12Backend {
                 .map_err(dx_err)?;
             let fence_event = CreateEventW(None, false, false, None).map_err(dx_err)?;
 
+            let features = FeatureSet::new()
+                .with(Feature::Bindless)
+                .with(Feature::DescriptorHeap)
+                .with(Feature::DynamicRendering)
+                .with(Feature::EnhancedBarriers);
+            let strategies = WiredStrategies::from_features(&features);
+
             Ok(Self {
                 device,
                 queue,
@@ -118,8 +132,44 @@ impl Dx12Backend {
                 buffers: BTreeMap::new(),
                 shared: BTreeMap::new(),
                 next_shared: 1,
+                strategies,
+                last_descriptor_path: "",
+                last_sync_path: "",
+                last_pipeline_path: "",
             })
         }
+    }
+
+    /// Degrade-chain strategies resolved when the backend opened.
+    pub fn strategies(&self) -> WiredStrategies {
+        self.strategies
+    }
+
+    /// Descriptor path label from the last submit that bound descriptors.
+    pub fn last_descriptor_path(&self) -> &'static str {
+        self.last_descriptor_path
+    }
+
+    /// Sync path label from the last submit that issued a barrier.
+    pub fn last_sync_path(&self) -> &'static str {
+        self.last_sync_path
+    }
+
+    /// Pipeline path label from the last submit that created a pipeline.
+    pub fn last_pipeline_path(&self) -> &'static str {
+        self.last_pipeline_path
+    }
+
+    fn mark_sync_path(&mut self) {
+        self.last_sync_path = self.strategies.sync_label();
+    }
+
+    fn mark_descriptor_path(&mut self) {
+        self.last_descriptor_path = self.strategies.descriptor_label();
+    }
+
+    fn mark_pipeline_path(&mut self) {
+        self.last_pipeline_path = self.strategies.pipeline_label();
     }
 
     /// Allocate a `HEAP_FLAG_SHARED` buffer and return its id + Win32 NT handle for CUDA import.
@@ -536,8 +586,11 @@ impl Dx12Backend {
         let count = (bytes / 4) as u32;
         let program = program_from_task(task);
         let dxbc = emit_dxil(&program).map_err(map_emit_err)?;
+        self.mark_pipeline_path();
         let (root, pso) = self.create_fill_pso(&dxbc)?;
         let dst_va = self.gpu_va(dst)?;
+        self.mark_sync_path();
+        self.mark_descriptor_path();
 
         unsafe {
             self.allocator.Reset().map_err(dx_err)?;
@@ -595,10 +648,13 @@ impl Dx12Backend {
 
         let program = program_from_task(task);
         let dxbc = emit_dxil(&program).map_err(map_emit_err)?;
+        self.mark_pipeline_path();
         let (root, pso) = self.create_matmul_pso(&dxbc)?;
         let a_va = self.gpu_va(a)?;
         let b_va = self.gpu_va(b)?;
         let out_va = self.gpu_va(out)?;
+        self.mark_sync_path();
+        self.mark_descriptor_path();
 
         unsafe {
             self.allocator.Reset().map_err(dx_err)?;
@@ -777,9 +833,13 @@ impl Dx12Backend {
             )?;
 
             let graphics = match &tri_shaders {
-                Some(shaders) => Some(self.create_graphics_tri_pso(&shaders.vs, &shaders.ps)?),
+                Some(shaders) => {
+                    self.mark_pipeline_path();
+                    Some(self.create_graphics_tri_pso(&shaders.vs, &shaders.ps)?)
+                }
                 None => None,
             };
+            self.mark_sync_path();
 
             self.allocator.Reset().map_err(dx_err)?;
             let list: ID3D12GraphicsCommandList = self
