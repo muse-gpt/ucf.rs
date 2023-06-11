@@ -8,10 +8,14 @@ pub type CUfunction = *mut c_void;
 pub type CUdeviceptr = u64;
 pub type CUstream = *mut c_void;
 pub type CUexternalMemory = *mut c_void;
+pub type CUgraph = *mut c_void;
+pub type CUgraphExec = *mut c_void;
 
 pub const CUDA_SUCCESS: CUresult = 0;
 pub const CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE: u32 = 5;
 pub const CUDA_EXTERNAL_MEMORY_DEDICATED: u32 = 0x1;
+/// `CUstreamCaptureMode::CU_STREAM_CAPTURE_MODE_GLOBAL`
+pub const CU_STREAM_CAPTURE_MODE_GLOBAL: u32 = 0;
 
 #[repr(C)]
 pub struct CUDA_EXTERNAL_MEMORY_HANDLE_DESC {
@@ -99,6 +103,14 @@ pub type CuLaunchKernel = unsafe extern "C" fn(
 pub type CuStreamCreate = unsafe extern "C" fn(*mut CUstream, u32) -> CUresult;
 pub type CuStreamSynchronize = unsafe extern "C" fn(CUstream) -> CUresult;
 pub type CuStreamDestroy = unsafe extern "C" fn(CUstream) -> CUresult;
+pub type CuStreamBeginCapture =
+    unsafe extern "C" fn(CUstream, u32) -> CUresult;
+pub type CuStreamEndCapture = unsafe extern "C" fn(CUstream, *mut CUgraph) -> CUresult;
+pub type CuGraphInstantiateWithFlags =
+    unsafe extern "C" fn(*mut CUgraphExec, CUgraph, u64) -> CUresult;
+pub type CuGraphLaunch = unsafe extern "C" fn(CUgraphExec, CUstream) -> CUresult;
+pub type CuGraphDestroy = unsafe extern "C" fn(CUgraph) -> CUresult;
+pub type CuGraphExecDestroy = unsafe extern "C" fn(CUgraphExec) -> CUresult;
 pub type CuImportExternalMemory = unsafe extern "C" fn(
     *mut CUexternalMemory,
     *const CUDA_EXTERNAL_MEMORY_HANDLE_DESC,

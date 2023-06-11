@@ -36,6 +36,12 @@ pub struct CudaDriver {
     cuStreamCreate: CuStreamCreate,
     cuStreamSynchronize: CuStreamSynchronize,
     cuStreamDestroy: CuStreamDestroy,
+    cuStreamBeginCapture: CuStreamBeginCapture,
+    cuStreamEndCapture: CuStreamEndCapture,
+    cuGraphInstantiateWithFlags: CuGraphInstantiateWithFlags,
+    cuGraphLaunch: CuGraphLaunch,
+    cuGraphDestroy: CuGraphDestroy,
+    cuGraphExecDestroy: CuGraphExecDestroy,
     cuImportExternalMemory: CuImportExternalMemory,
     cuExternalMemoryGetMappedBuffer: CuExternalMemoryGetMappedBuffer,
     cuDestroyExternalMemory: CuDestroyExternalMemory,
@@ -70,6 +76,13 @@ impl CudaDriver {
             let cuStreamCreate = load_fn!(lib, cuStreamCreate, CuStreamCreate);
             let cuStreamSynchronize = load_fn!(lib, cuStreamSynchronize, CuStreamSynchronize);
             let cuStreamDestroy = load_fn!(lib, cuStreamDestroy, CuStreamDestroy);
+            let cuStreamBeginCapture = load_fn!(lib, cuStreamBeginCapture, CuStreamBeginCapture);
+            let cuStreamEndCapture = load_fn!(lib, cuStreamEndCapture, CuStreamEndCapture);
+            let cuGraphInstantiateWithFlags =
+                load_fn!(lib, cuGraphInstantiateWithFlags, CuGraphInstantiateWithFlags);
+            let cuGraphLaunch = load_fn!(lib, cuGraphLaunch, CuGraphLaunch);
+            let cuGraphDestroy = load_fn!(lib, cuGraphDestroy, CuGraphDestroy);
+            let cuGraphExecDestroy = load_fn!(lib, cuGraphExecDestroy, CuGraphExecDestroy);
             let cuImportExternalMemory =
                 load_fn!(lib, cuImportExternalMemory, CuImportExternalMemory);
             let cuExternalMemoryGetMappedBuffer = load_fn!(
@@ -109,6 +122,12 @@ impl CudaDriver {
                 cuStreamCreate,
                 cuStreamSynchronize,
                 cuStreamDestroy,
+                cuStreamBeginCapture,
+                cuStreamEndCapture,
+                cuGraphInstantiateWithFlags,
+                cuGraphLaunch,
+                cuGraphDestroy,
+                cuGraphExecDestroy,
                 cuImportExternalMemory,
                 cuExternalMemoryGetMappedBuffer,
                 cuDestroyExternalMemory,
@@ -167,6 +186,26 @@ impl CudaDriver {
         count: u32,
         out: CUdeviceptr,
     ) -> Result<(), DriverError> {
+        self.launch_fill_on_stream(func, count, out, true)
+    }
+
+    /// Launch fill without synchronizing (for stream capture into a CUDA Graph).
+    pub fn launch_fill_async(
+        &self,
+        func: CUfunction,
+        count: u32,
+        out: CUdeviceptr,
+    ) -> Result<(), DriverError> {
+        self.launch_fill_on_stream(func, count, out, false)
+    }
+
+    fn launch_fill_on_stream(
+        &self,
+        func: CUfunction,
+        count: u32,
+        out: CUdeviceptr,
+        sync: bool,
+    ) -> Result<(), DriverError> {
         let block = 256u32;
         let grid = count.saturating_add(block - 1) / block;
         let mut count_arg = count;
@@ -175,7 +214,7 @@ impl CudaDriver {
             (&mut count_arg as *mut u32).cast(),
             (&mut out_arg as *mut CUdeviceptr).cast(),
         ];
-        self.launch(func, grid, block, &mut params)
+        self.launch(func, grid, block, &mut params, sync)
     }
 
     /// Launch matmul kernel with `(a, b, out, m, n, k)` device/host args.
@@ -206,7 +245,7 @@ impl CudaDriver {
             (&mut n_arg as *mut u32).cast(),
             (&mut k_arg as *mut u32).cast(),
         ];
-        self.launch(func, grid, block, &mut params)
+        self.launch(func, grid, block, &mut params, true)
     }
 
     /// Launch RGBA8 denoise: `(src, out, width, height)`.
@@ -231,7 +270,7 @@ impl CudaDriver {
             (&mut width_arg as *mut u32).cast(),
             (&mut height_arg as *mut u32).cast(),
         ];
-        self.launch(func, grid, block, &mut params)
+        self.launch(func, grid, block, &mut params, true)
     }
 
     /// Launch attention: `(q, k, v, out, batch, heads, seq, dim)`.
@@ -272,7 +311,7 @@ impl CudaDriver {
             (&mut seq_arg as *mut u32).cast(),
             (&mut dim_arg as *mut u32).cast(),
         ];
-        self.launch(func, grid, block, &mut params)
+        self.launch(func, grid, block, &mut params, true)
     }
 
     fn launch(
@@ -281,6 +320,7 @@ impl CudaDriver {
         grid: u32,
         block: u32,
         params: &mut [*mut c_void],
+        sync: bool,
     ) -> Result<(), DriverError> {
         unsafe {
             check(
@@ -299,9 +339,65 @@ impl CudaDriver {
                 ),
                 "cuLaunchKernel",
             )?;
+            if sync {
+                check((self.cuStreamSynchronize)(self.stream), "cuStreamSynchronize")?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Begin recording work on the default stream into a CUDA Graph.
+    pub fn stream_begin_capture(&self) -> Result<(), DriverError> {
+        unsafe {
+            check(
+                (self.cuStreamBeginCapture)(self.stream, CU_STREAM_CAPTURE_MODE_GLOBAL),
+                "cuStreamBeginCapture",
+            )
+        }
+    }
+
+    /// End stream capture and return the recorded graph.
+    pub fn stream_end_capture(&self) -> Result<CUgraph, DriverError> {
+        let mut graph: CUgraph = std::ptr::null_mut();
+        unsafe {
+            check(
+                (self.cuStreamEndCapture)(self.stream, &mut graph),
+                "cuStreamEndCapture",
+            )?;
+        }
+        Ok(graph)
+    }
+
+    /// Instantiate a captured graph for launch.
+    pub fn graph_instantiate(&self, graph: CUgraph) -> Result<CUgraphExec, DriverError> {
+        let mut exec: CUgraphExec = std::ptr::null_mut();
+        unsafe {
+            check(
+                (self.cuGraphInstantiateWithFlags)(&mut exec, graph, 0),
+                "cuGraphInstantiateWithFlags",
+            )?;
+        }
+        Ok(exec)
+    }
+
+    /// Launch an instantiated graph on the default stream and synchronize.
+    pub fn graph_launch(&self, exec: CUgraphExec) -> Result<(), DriverError> {
+        unsafe {
+            check(
+                (self.cuGraphLaunch)(exec, self.stream),
+                "cuGraphLaunch",
+            )?;
             check((self.cuStreamSynchronize)(self.stream), "cuStreamSynchronize")?;
         }
         Ok(())
+    }
+
+    pub fn graph_destroy(&self, graph: CUgraph) -> Result<(), DriverError> {
+        unsafe { check((self.cuGraphDestroy)(graph), "cuGraphDestroy") }
+    }
+
+    pub fn graph_exec_destroy(&self, exec: CUgraphExec) -> Result<(), DriverError> {
+        unsafe { check((self.cuGraphExecDestroy)(exec), "cuGraphExecDestroy") }
     }
 
     pub fn load_module(&self, ptx: &[u8]) -> Result<CUmodule, DriverError> {
