@@ -7,3 +7,4 @@ ROCm / HIP backend via dynamic `amdhip64` (or `amdhip64_6`).
 - `Fill` / `MatMul` from [`ucf-emitter`](../../ucf-emitter/) **HSACO** loaded with `hipModuleLoadData` (no `hiprtc`)
 - Soft-skips when no HIP runtime / device is available (`tests/parity_cpu.rs`)
 - Advertises `UnifiedMemory`, `MatrixCore`, and `HipGraph` via `FeatureSet`
+- HipGraph wiring: Fill-only `run_prepared_hip_graph` (`ucf` `tests/hip_graph_fill.rs`)

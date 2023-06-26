@@ -5,12 +5,17 @@ pub type HipDeviceptr = *mut c_void;
 pub type HipModule = *mut c_void;
 pub type HipFunction = *mut c_void;
 pub type HipStream = *mut c_void;
+pub type HipGraph = *mut c_void;
+pub type HipGraphExec = *mut c_void;
 
 pub const HIP_SUCCESS: HipError = 0;
 
 pub const HIP_MEMCPY_HOST_TO_DEVICE: i32 = 1;
 pub const HIP_MEMCPY_DEVICE_TO_HOST: i32 = 2;
 pub const HIP_MEMCPY_DEVICE_TO_DEVICE: i32 = 3;
+
+/// `hipStreamCaptureMode::hipStreamCaptureModeGlobal`
+pub const HIP_STREAM_CAPTURE_MODE_GLOBAL: u32 = 0;
 
 #[derive(Debug)]
 pub struct DriverError {
@@ -40,7 +45,6 @@ pub type HipSetDevice = unsafe extern "C" fn(i32) -> HipError;
 pub type HipMalloc = unsafe extern "C" fn(*mut *mut c_void, usize) -> HipError;
 pub type HipFree = unsafe extern "C" fn(*mut c_void) -> HipError;
 pub type HipMemcpy = unsafe extern "C" fn(*mut c_void, *const c_void, usize, i32) -> HipError;
-pub type HipDeviceSynchronize = unsafe extern "C" fn() -> HipError;
 pub type HipModuleLoadData = unsafe extern "C" fn(*mut HipModule, *const c_void) -> HipError;
 pub type HipModuleUnload = unsafe extern "C" fn(HipModule) -> HipError;
 pub type HipModuleGetFunction =
@@ -58,3 +62,13 @@ pub type HipModuleLaunchKernel = unsafe extern "C" fn(
     *mut *mut c_void,
     *mut c_void,
 ) -> HipError;
+pub type HipStreamCreate = unsafe extern "C" fn(*mut HipStream) -> HipError;
+pub type HipStreamSynchronize = unsafe extern "C" fn(HipStream) -> HipError;
+pub type HipStreamDestroy = unsafe extern "C" fn(HipStream) -> HipError;
+pub type HipStreamBeginCapture = unsafe extern "C" fn(HipStream, u32) -> HipError;
+pub type HipStreamEndCapture = unsafe extern "C" fn(HipStream, *mut HipGraph) -> HipError;
+pub type HipGraphInstantiateWithFlags =
+    unsafe extern "C" fn(*mut HipGraphExec, HipGraph, u64) -> HipError;
+pub type HipGraphLaunch = unsafe extern "C" fn(HipGraphExec, HipStream) -> HipError;
+pub type HipGraphDestroy = unsafe extern "C" fn(HipGraph) -> HipError;
+pub type HipGraphExecDestroy = unsafe extern "C" fn(HipGraphExec) -> HipError;
