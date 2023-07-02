@@ -83,6 +83,8 @@ pub type CuMemFree = unsafe extern "C" fn(CUdeviceptr) -> CUresult;
 pub type CuMemcpyHtoD = unsafe extern "C" fn(CUdeviceptr, *const c_void, usize) -> CUresult;
 pub type CuMemcpyDtoH = unsafe extern "C" fn(*mut c_void, CUdeviceptr, usize) -> CUresult;
 pub type CuMemcpyDtoD = unsafe extern "C" fn(CUdeviceptr, CUdeviceptr, usize) -> CUresult;
+pub type CuMemcpyDtoDAsync =
+    unsafe extern "C" fn(CUdeviceptr, CUdeviceptr, usize, CUstream) -> CUresult;
 pub type CuModuleLoadData = unsafe extern "C" fn(*mut CUmodule, *const c_void) -> CUresult;
 pub type CuModuleUnload = unsafe extern "C" fn(CUmodule) -> CUresult;
 pub type CuModuleGetFunction =
