@@ -6,7 +6,10 @@ use ucf_ir::{Graph, TaskKind, TaskNode};
 use ucf_scheduler::{Backend, Error as SchedulerError, Result};
 use ucf_types::ResourceId;
 
-use crate::driver::{CudaDriver, CUdeviceptr, CUexternalMemory, CUfunction, CUmodule, DriverError};
+use crate::driver::{
+    CudaDriver, CUdeviceptr, CUexternalMemory, CUfunction, CUgraph, CUgraphExec, CUmodule,
+    DriverError,
+};
 use crate::params::{f32_param, resource_param, u32_param, BackendError};
 
 struct DeviceBuffer {
@@ -23,6 +26,13 @@ struct ImportedBuffer {
 /// Opaque id for a buffer imported from a DX12 NT shared handle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ImportedBufferId(pub u64);
+
+/// Instantiated CUDA Graph plus PTX modules that must stay loaded until release.
+pub struct CapturedCudaGraph {
+    graph: CUgraph,
+    exec: CUgraphExec,
+    modules: Vec<CUmodule>,
+}
 
 /// NVIDIA backend via CUDA Driver API with device-resident resources.
 pub struct CudaBackend {
@@ -169,11 +179,11 @@ impl CudaBackend {
         Ok(())
     }
 
-    /// Capture a Copy/Fill/MatMul TaskGraph into a CUDA Graph, instantiate, and launch once.
+    /// Capture a Copy/Fill/MatMul TaskGraph into a CUDA Graph and instantiate it.
     ///
-    /// Thin-gate subset: every task must be [`TaskKind::Copy`], [`TaskKind::Fill`], or
-    /// [`TaskKind::MatMul`]. Modules stay loaded for the lifetime of the capture.
-    pub fn run_prepared_cuda_graph(&mut self, graph: &Graph) -> Result<()> {
+    /// Caller must [`launch_cuda_graph`] then [`release_cuda_graph`]. Modules stay loaded
+    /// for the lifetime of the returned handle.
+    pub fn capture_cuda_graph(&mut self, graph: &Graph) -> Result<CapturedCudaGraph> {
         graph.validate().map_err(SchedulerError::from)?;
         let order = graph.tasks.topological_order().map_err(SchedulerError::from)?;
         if order.is_empty() {
@@ -449,7 +459,7 @@ impl CudaBackend {
             }
         }
 
-        let result = (|| {
+        let capture = (|| {
             self.driver
                 .stream_begin_capture()
                 .map_err(map_driver_err)?;
@@ -491,13 +501,54 @@ impl CudaBackend {
                     return Err(map_driver_err(err));
                 }
             };
-            let launch = self.driver.graph_launch(exec);
-            let _ = self.driver.graph_exec_destroy(exec);
-            let _ = self.driver.graph_destroy(graph);
-            launch.map_err(map_driver_err)
+            Ok((graph, exec))
         })();
 
-        unload_ops(&self.driver, &ops);
+        match capture {
+            Ok((graph, exec)) => {
+                let mut modules = Vec::new();
+                for op in ops {
+                    match op {
+                        CapturedOp::Fill { module, .. } | CapturedOp::MatMul { module, .. } => {
+                            modules.push(module);
+                        }
+                        CapturedOp::Copy { .. } => {}
+                    }
+                }
+                Ok(CapturedCudaGraph {
+                    graph,
+                    exec,
+                    modules,
+                })
+            }
+            Err(err) => {
+                unload_ops(&self.driver, &ops);
+                Err(err)
+            }
+        }
+    }
+
+    /// Launch a previously captured CUDA Graph and synchronize.
+    pub fn launch_cuda_graph(&mut self, captured: &CapturedCudaGraph) -> Result<()> {
+        self.driver
+            .graph_launch(captured.exec)
+            .map_err(map_driver_err)
+    }
+
+    /// Destroy graph exec / graph and unload PTX modules owned by `captured`.
+    pub fn release_cuda_graph(&mut self, captured: CapturedCudaGraph) {
+        let _ = self.driver.graph_exec_destroy(captured.exec);
+        let _ = self.driver.graph_destroy(captured.graph);
+        for module in captured.modules {
+            let _ = self.driver.unload_module(module);
+        }
+    }
+
+    /// Capture a Copy/Fill/MatMul TaskGraph into a CUDA Graph, instantiate, and launch once.
+    pub fn run_prepared_cuda_graph(&mut self, graph: &Graph) -> Result<()> {
+        let captured = self.capture_cuda_graph(graph)?;
+        let result = self.launch_cuda_graph(&captured);
+        self.release_cuda_graph(captured);
         result
     }
 
