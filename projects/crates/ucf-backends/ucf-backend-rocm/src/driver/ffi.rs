@@ -45,6 +45,8 @@ pub type HipSetDevice = unsafe extern "C" fn(i32) -> HipError;
 pub type HipMalloc = unsafe extern "C" fn(*mut *mut c_void, usize) -> HipError;
 pub type HipFree = unsafe extern "C" fn(*mut c_void) -> HipError;
 pub type HipMemcpy = unsafe extern "C" fn(*mut c_void, *const c_void, usize, i32) -> HipError;
+pub type HipMemcpyAsync =
+    unsafe extern "C" fn(*mut c_void, *const c_void, usize, i32, HipStream) -> HipError;
 pub type HipModuleLoadData = unsafe extern "C" fn(*mut HipModule, *const c_void) -> HipError;
 pub type HipModuleUnload = unsafe extern "C" fn(HipModule) -> HipError;
 pub type HipModuleGetFunction =

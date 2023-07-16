@@ -25,6 +25,7 @@ pub struct HipDriver {
     hipMalloc: HipMalloc,
     hipFree: HipFree,
     hipMemcpy: HipMemcpy,
+    hipMemcpyAsync: HipMemcpyAsync,
     hipModuleLoadData: HipModuleLoadData,
     hipModuleUnload: HipModuleUnload,
     hipModuleGetFunction: HipModuleGetFunction,
@@ -50,6 +51,7 @@ impl HipDriver {
             let hipMalloc = load_fn!(runtime, hipMalloc, HipMalloc);
             let hipFree = load_fn!(runtime, hipFree, HipFree);
             let hipMemcpy = load_fn!(runtime, hipMemcpy, HipMemcpy);
+            let hipMemcpyAsync = load_fn!(runtime, hipMemcpyAsync, HipMemcpyAsync);
             let hipModuleLoadData = load_fn!(runtime, hipModuleLoadData, HipModuleLoadData);
             let hipModuleUnload = load_fn!(runtime, hipModuleUnload, HipModuleUnload);
             let hipModuleGetFunction =
@@ -94,6 +96,7 @@ impl HipDriver {
                 hipMalloc,
                 hipFree,
                 hipMemcpy,
+                hipMemcpyAsync,
                 hipModuleLoadData,
                 hipModuleUnload,
                 hipModuleGetFunction,
@@ -165,6 +168,28 @@ impl HipDriver {
             check_hip(
                 (self.hipMemcpy)(dst, src, bytes, HIP_MEMCPY_DEVICE_TO_DEVICE),
                 "hipMemcpy DtoD",
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Device-to-device copy on the owned stream (for HIP Graph capture).
+    pub fn memcpy_dtod_async(
+        &self,
+        dst: HipDeviceptr,
+        src: HipDeviceptr,
+        bytes: usize,
+    ) -> Result<(), DriverError> {
+        unsafe {
+            check_hip(
+                (self.hipMemcpyAsync)(
+                    dst,
+                    src,
+                    bytes,
+                    HIP_MEMCPY_DEVICE_TO_DEVICE,
+                    self.stream,
+                ),
+                "hipMemcpyAsync DtoD",
             )?;
         }
         Ok(())
@@ -248,6 +273,34 @@ impl HipDriver {
         n: u32,
         k: u32,
     ) -> Result<(), DriverError> {
+        self.launch_matmul_on_stream(func, a, b, out, m, n, k, true)
+    }
+
+    /// Launch matmul without synchronizing (for stream capture into a HIP Graph).
+    pub fn launch_matmul_async(
+        &self,
+        func: HipFunction,
+        a: HipDeviceptr,
+        b: HipDeviceptr,
+        out: HipDeviceptr,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) -> Result<(), DriverError> {
+        self.launch_matmul_on_stream(func, a, b, out, m, n, k, false)
+    }
+
+    fn launch_matmul_on_stream(
+        &self,
+        func: HipFunction,
+        a: HipDeviceptr,
+        b: HipDeviceptr,
+        out: HipDeviceptr,
+        m: u32,
+        n: u32,
+        k: u32,
+        sync: bool,
+    ) -> Result<(), DriverError> {
         let total = m.saturating_mul(n).max(1);
         let block = 256u32;
         let grid = total.div_ceil(block).max(1);
@@ -265,7 +318,7 @@ impl HipDriver {
             (&mut n_arg as *mut u32).cast(),
             (&mut k_arg as *mut u32).cast(),
         ];
-        self.launch(func, grid, block, &mut params, true)
+        self.launch(func, grid, block, &mut params, sync)
     }
 
     /// Launch attention: `(q, k, v, out, batch, heads, seq, dim)`.
