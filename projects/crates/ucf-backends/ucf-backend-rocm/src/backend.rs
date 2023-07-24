@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::hash::{Hash, Hasher};
 
 use ucf_capability::{Feature, FeatureSet};
 use ucf_emitter::{emit_hsaco, program_from_task};
@@ -16,6 +17,11 @@ struct DeviceBuffer {
     bytes: usize,
 }
 
+struct CachedHipModule {
+    module: HipModule,
+    func: HipFunction,
+}
+
 /// Instantiated HIP Graph plus HSACO modules that must stay loaded until release.
 pub struct CapturedHipGraph {
     graph: HipGraph,
@@ -27,6 +33,9 @@ pub struct CapturedHipGraph {
 pub struct RocmBackend {
     driver: HipDriver,
     buffers: BTreeMap<ResourceId, DeviceBuffer>,
+    module_cache: BTreeMap<u64, CachedHipModule>,
+    module_cache_hits: u64,
+    module_cache_misses: u64,
 }
 
 impl RocmBackend {
@@ -36,7 +45,50 @@ impl RocmBackend {
         Ok(Self {
             driver,
             buffers: BTreeMap::new(),
+            module_cache: BTreeMap::new(),
+            module_cache_hits: 0,
+            module_cache_misses: 0,
         })
+    }
+
+    /// Stream-path module cache hits (thin-gate counters).
+    pub fn module_cache_hits(&self) -> u64 {
+        self.module_cache_hits
+    }
+
+    /// Stream-path module cache misses (thin-gate counters).
+    pub fn module_cache_misses(&self) -> u64 {
+        self.module_cache_misses
+    }
+
+    /// Drop cached HSACO modules (does not free device buffers).
+    pub fn clear_module_cache(&mut self) {
+        let cache = std::mem::take(&mut self.module_cache);
+        for (_, entry) in cache {
+            let _ = self.driver.unload_module(entry.module);
+        }
+        self.module_cache_hits = 0;
+        self.module_cache_misses = 0;
+    }
+
+    fn cached_kernel(&mut self, code: &[u8], entry: &str) -> Result<(HipModule, HipFunction)> {
+        let key = code_key(code);
+        if let Some(cached) = self.module_cache.get(&key) {
+            self.module_cache_hits += 1;
+            return Ok((cached.module, cached.func));
+        }
+        let module = self.driver.load_module(code).map_err(map_driver_err)?;
+        let func = match self.driver.get_function(module, entry) {
+            Ok(f) => f,
+            Err(err) => {
+                let _ = self.driver.unload_module(module);
+                return Err(map_driver_err(err));
+            }
+        };
+        self.module_cache
+            .insert(key, CachedHipModule { module, func });
+        self.module_cache_misses += 1;
+        Ok((module, func))
     }
 
     /// Upload host `f32` values into an allocated device buffer.
@@ -504,18 +556,10 @@ impl RocmBackend {
         let count = (bytes / 4) as u32;
         let program = program_from_task(task);
         let hsaco = emit_hsaco(&program).map_err(map_emit_err)?;
-        let module = self.driver.load_module(&hsaco).map_err(map_driver_err)?;
-        let result = (|| {
-            let func = self
-                .driver
-                .get_function(module, &program.entry)
-                .map_err(map_driver_err)?;
-            self.driver
-                .launch_fill(func, ptr, count)
-                .map_err(map_driver_err)
-        })();
-        let _ = self.driver.unload_module(module);
-        result
+        let (_module, func) = self.cached_kernel(&hsaco, &program.entry)?;
+        self.driver
+            .launch_fill(func, ptr, count)
+            .map_err(map_driver_err)
     }
 
     fn run_matmul(&mut self, task: &TaskNode) -> Result<()> {
@@ -534,18 +578,10 @@ impl RocmBackend {
 
         let program = program_from_task(task);
         let hsaco = emit_hsaco(&program).map_err(map_emit_err)?;
-        let module = self.driver.load_module(&hsaco).map_err(map_driver_err)?;
-        let result = (|| {
-            let func = self
-                .driver
-                .get_function(module, &program.entry)
-                .map_err(map_driver_err)?;
-            self.driver
-                .launch_matmul(func, a_ptr, b_ptr, out_ptr, m, n, k)
-                .map_err(map_driver_err)
-        })();
-        let _ = self.driver.unload_module(module);
-        result
+        let (_module, func) = self.cached_kernel(&hsaco, &program.entry)?;
+        self.driver
+            .launch_matmul(func, a_ptr, b_ptr, out_ptr, m, n, k)
+            .map_err(map_driver_err)
     }
 
     fn run_attention(&mut self, task: &TaskNode) -> Result<()> {
@@ -576,23 +612,16 @@ impl RocmBackend {
 
         let program = program_from_task(task);
         let hsaco = emit_hsaco(&program).map_err(map_emit_err)?;
-        let module = self.driver.load_module(&hsaco).map_err(map_driver_err)?;
-        let result = (|| {
-            let func = self
-                .driver
-                .get_function(module, &program.entry)
-                .map_err(map_driver_err)?;
-            self.driver
-                .launch_attention(func, q_ptr, k_ptr, v_ptr, out_ptr, batch, heads, seq, dim)
-                .map_err(map_driver_err)
-        })();
-        let _ = self.driver.unload_module(module);
-        result
+        let (_module, func) = self.cached_kernel(&hsaco, &program.entry)?;
+        self.driver
+            .launch_attention(func, q_ptr, k_ptr, v_ptr, out_ptr, batch, heads, seq, dim)
+            .map_err(map_driver_err)
     }
 }
 
 impl Drop for RocmBackend {
     fn drop(&mut self) {
+        self.clear_module_cache();
         let buffers = std::mem::take(&mut self.buffers);
         for (_, buf) in buffers {
             let _ = self.driver.mem_free(buf.ptr);
@@ -669,6 +698,12 @@ fn expect_bytes(id: ResourceId, have: usize, need: usize) -> Result<()> {
         ))));
     }
     Ok(())
+}
+
+fn code_key(bytes: &[u8]) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 fn map_driver_err(error: DriverError) -> SchedulerError {
