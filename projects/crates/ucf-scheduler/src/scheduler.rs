@@ -5,6 +5,7 @@ use ucf_ir::{Graph, Objective, Priority, TaskId};
 use crate::backend::Backend;
 use crate::deadline::effective_deadlines;
 use crate::error::{Error, Result};
+use ucf_capability::CapabilityReport;
 
 /// Places and submits tasks onto registered backends.
 pub struct Scheduler {
@@ -24,6 +25,40 @@ impl Scheduler {
         self.backends.push(backend);
     }
 
+    /// Capability rows for every registered backend (application probe).
+    pub fn capabilities(&self) -> CapabilityReport {
+        CapabilityReport::from_backends(
+            self.backends
+                .iter()
+                .map(|b| (b.name().to_string(), b.features())),
+        )
+    }
+
+    /// Validate the graph and allocate/bind resources on every backend.
+    ///
+    /// Idempotent when resource sizes match an existing allocation.
+    pub fn prepare(&mut self, graph: &Graph) -> Result<()> {
+        graph.validate()?;
+        for backend in &mut self.backends {
+            backend.prepare(graph)?;
+        }
+        Ok(())
+    }
+
+    /// Flush every registered backend (host-visible after prior submits).
+    pub fn flush(&mut self) -> Result<()> {
+        for backend in &mut self.backends {
+            backend.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Submit a previously [`prepare`]d graph (does not allocate again).
+    pub fn submit_prepared(&mut self, graph: &Graph) -> Result<()> {
+        graph.validate()?;
+        self.dispatch(graph)
+    }
+
     /// Validate, prepare, then submit tasks in dependency order.
     ///
     /// Ready tasks prefer [`Priority::Interactive`] and tighter effective deadlines
@@ -33,12 +68,11 @@ impl Scheduler {
     /// name (exact or substring). Crossing backends calls [`Backend::flush`] on the
     /// previous backend before the next submit.
     pub fn execute(&mut self, graph: &Graph) -> Result<()> {
-        graph.validate()?;
+        self.prepare(graph)?;
+        self.dispatch(graph)
+    }
 
-        for backend in &mut self.backends {
-            backend.prepare(graph)?;
-        }
-
+    fn dispatch(&mut self, graph: &Graph) -> Result<()> {
         let deadlines = effective_deadlines(graph);
         let order = schedule_order(graph, &deadlines)?;
         let mut last_backend: Option<usize> = None;
