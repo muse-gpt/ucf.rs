@@ -1,13 +1,16 @@
+use ucf_capability::CapabilityReport;
 use ucf_ir::Graph;
 use ucf_optimize::{apply, Optimization};
 use ucf_scheduler::{Backend, Scheduler};
 
 use crate::capacity::{apply_capacity, CapacityPolicy};
+use crate::diagnostics::ExecutionDiagnostics;
 
 /// Owns backends, capacity policy, and graph execution.
 pub struct Runtime {
     scheduler: Scheduler,
     capacity: CapacityPolicy,
+    diagnostics: ExecutionDiagnostics,
 }
 
 impl Runtime {
@@ -16,6 +19,7 @@ impl Runtime {
         Self {
             scheduler: Scheduler::new(),
             capacity: CapacityPolicy::default(),
+            diagnostics: ExecutionDiagnostics::default(),
         }
     }
 
@@ -24,6 +28,7 @@ impl Runtime {
         Self {
             scheduler: Scheduler::new(),
             capacity,
+            diagnostics: ExecutionDiagnostics::default(),
         }
     }
 
@@ -37,12 +42,71 @@ impl Runtime {
         self.capacity
     }
 
-    /// Run a graph under the current capacity policy.
+    /// Capability rows for every registered backend.
+    pub fn capabilities(&self) -> CapabilityReport {
+        self.scheduler.capabilities()
+    }
+
+    /// Accumulated execution diagnostics (application contract probe).
+    pub fn diagnostics(&self) -> &ExecutionDiagnostics {
+        &self.diagnostics
+    }
+
+    /// Clear diagnostics between runs.
+    pub fn clear_diagnostics(&mut self) {
+        self.diagnostics.clear();
+    }
+
+    /// Validate and prepare resources on every backend (idempotent on size match).
+    pub fn prepare(&mut self, graph: &Graph) -> ucf_scheduler::Result<()> {
+        self.diagnostics
+            .push_simple("graph_validate", None, None, "runtime");
+        let result = self.scheduler.prepare(graph);
+        if result.is_ok() {
+            self.diagnostics
+                .push_simple("resource_prepare", None, None, "runtime");
+        }
+        result
+    }
+
+    /// Flush every registered backend.
+    pub fn flush(&mut self) -> ucf_scheduler::Result<()> {
+        let result = self.scheduler.flush();
+        if result.is_ok() {
+            self.diagnostics
+                .push_simple("flush", None, None, "runtime");
+        }
+        result
+    }
+
+    /// Apply capacity, then submit a previously prepared graph (no second prepare).
+    pub fn run_prepared(&mut self, graph: &Graph) -> ucf_scheduler::Result<()> {
+        self.run_prepared_with_opts(graph, &[])
+    }
+
+    /// Optimizations + capacity + submit without re-preparing.
+    pub fn run_prepared_with_opts(
+        &mut self,
+        graph: &Graph,
+        opts: &[Optimization],
+    ) -> ucf_scheduler::Result<()> {
+        let mut graph = graph.clone();
+        apply(&mut graph, opts)?;
+        apply_capacity(&mut graph, self.capacity)?;
+        let result = self.scheduler.submit_prepared(&graph);
+        if result.is_ok() {
+            self.diagnostics
+                .push_simple("task_submit", None, None, "runtime");
+        }
+        result
+    }
+
+    /// Run a graph under the current capacity policy (prepare + submit).
     pub fn run(&mut self, graph: &Graph) -> ucf_scheduler::Result<()> {
         self.run_with_opts(graph, &[])
     }
 
-    /// Apply optimizations, then capacity, then schedule.
+    /// Apply optimizations, then capacity, then schedule (prepare + submit).
     pub fn run_with_opts(
         &mut self,
         graph: &Graph,
@@ -51,7 +115,16 @@ impl Runtime {
         let mut graph = graph.clone();
         apply(&mut graph, opts)?;
         apply_capacity(&mut graph, self.capacity)?;
-        self.scheduler.execute(&graph)
+        self.diagnostics
+            .push_simple("graph_validate", None, None, "runtime");
+        let result = self.scheduler.execute(&graph);
+        if result.is_ok() {
+            self.diagnostics
+                .push_simple("resource_prepare", None, None, "runtime");
+            self.diagnostics
+                .push_simple("task_submit", None, None, "runtime");
+        }
+        result
     }
 }
 
@@ -130,5 +203,26 @@ mod tests {
         });
         rt.register_backend(Box::new(NoopBackend));
         rt.run(&graph).expect("migrate then run");
+    }
+
+    #[test]
+    fn prepare_flush_capabilities_record_diagnostics() {
+        let graph = Graph {
+            resources: ResourceGraph {
+                nodes: vec![],
+            },
+            tasks: TaskGraph {
+                nodes: vec![],
+                edges: vec![],
+            },
+        };
+        let mut rt = Runtime::new();
+        rt.register_backend(Box::new(NoopBackend));
+        assert!(!rt.capabilities().backends.is_empty());
+        rt.prepare(&graph).expect("prepare");
+        rt.flush().expect("flush");
+        assert!(rt.diagnostics().contains_kind("graph_validate"));
+        assert!(rt.diagnostics().contains_kind("resource_prepare"));
+        assert!(rt.diagnostics().contains_kind("flush"));
     }
 }

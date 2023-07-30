@@ -36,10 +36,18 @@ pub use ucf_optimize::{
 
 // Scheduler / runtime
 pub use ucf_scheduler::{
-    fits_120hz_frame, Backend, Error as SchedulerError, NoopBackend, Result as SchedulerResult,
-    Scheduler, FRAME_BUDGET_120HZ_MICROS,
+    fits_120hz_frame, Backend, Error as SchedulerError, ErrorCode as SchedulerErrorCode,
+    NoopBackend, Result as SchedulerResult, Scheduler, FRAME_BUDGET_120HZ_MICROS,
 };
-pub use ucf_runtime::{dry_run, CapacityPolicy, Runtime};
+pub use ucf_runtime::{
+    dry_run, CapacityPolicy, ExecutionDiagnostics, ExecutionEvent, Runtime,
+};
+
+#[cfg(feature = "cpu")]
+mod session;
+
+#[cfg(feature = "cpu")]
+pub use session::CpuSession;
 
 #[cfg(feature = "cpu")]
 pub use ucf_backend_cpu as backend_cpu;
@@ -63,15 +71,18 @@ pub mod prelude {
         pick_descriptor_strategy, pick_pipeline_strategy, pick_sync_strategy, Access,
         AttentionMetrics, Backend, BackendCapabilities, BackendPerfRow, CapacityPolicy,
         CapabilityReport, chain_edges, DepEdge, DepKind, DescriptorStrategy, Dispatch, Domain,
-        dry_run, Feature, FeatureSet, Graph, GraphBuilder, MatmulMetrics, NoopBackend, Objective,
-        Optimization, ParamValue, PerfReport, PipelineStrategy, Priority, ResourceGraph,
-        ResourceId, ResourceKind, ResourceNode, Runtime, Scheduler, ShaderId, SyncStrategy,
-        TaskGraph, TaskId, TaskKind, TaskNode, TimedSample, FRAME_BUDGET_120HZ_MICROS, UCF_MAGIC,
-        UCF_WIRE_MAJOR,
+        dry_run, ExecutionDiagnostics, ExecutionEvent, Feature, FeatureSet, Graph, GraphBuilder,
+        MatmulMetrics, NoopBackend, Objective, Optimization, ParamValue, PerfReport,
+        PipelineStrategy, Priority, ResourceGraph, ResourceId, ResourceKind, ResourceNode,
+        Runtime, Scheduler, SchedulerErrorCode, ShaderId, SyncStrategy, TaskGraph, TaskId,
+        TaskKind, TaskNode, TimedSample, FRAME_BUDGET_120HZ_MICROS, UCF_MAGIC, UCF_WIRE_MAJOR,
     };
 
     #[cfg(feature = "cpu")]
     pub use crate::backend_cpu::{shared_store, CpuBackend, HostStore};
+
+    #[cfg(feature = "cpu")]
+    pub use crate::CpuSession;
 
     #[cfg(feature = "cuda")]
     pub use crate::backend_cuda::CudaBackend;

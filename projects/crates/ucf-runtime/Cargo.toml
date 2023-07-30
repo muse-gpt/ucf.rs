@@ -9,6 +9,7 @@ authors.workspace = true
 publish.workspace = true
 
 [dependencies]
+ucf-capability = { workspace = true }
 ucf-ir = { workspace = true }
 ucf-optimize = { workspace = true }
 ucf-scheduler = { workspace = true }
