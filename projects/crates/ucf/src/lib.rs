@@ -37,7 +37,9 @@ pub use ucf_optimize::{
 // Scheduler / runtime
 pub use ucf_scheduler::{
     fits_120hz_frame, Backend, Error as SchedulerError, ErrorCode as SchedulerErrorCode,
-    NoopBackend, Result as SchedulerResult, Scheduler, FRAME_BUDGET_120HZ_MICROS,
+    ExecEvent, ExecStream, ExecutionBindings, ExternalBuffer, ImmediateBridge, ImmediateEvent,
+    ImmediateStream, NoopBackend, Result as SchedulerResult, Scheduler, StreamEventBridge,
+    FRAME_BUDGET_120HZ_MICROS,
 };
 pub use ucf_runtime::{
     dry_run, CapacityPolicy, ExecutionDiagnostics, ExecutionEvent, Runtime,
@@ -47,7 +49,7 @@ pub use ucf_runtime::{
 mod session;
 
 #[cfg(feature = "cpu")]
-pub use session::CpuSession;
+pub use session::{immediate_event, immediate_stream, CpuSession};
 
 #[cfg(feature = "cpu")]
 pub use ucf_backend_cpu as backend_cpu;
@@ -74,15 +76,17 @@ pub mod prelude {
         dry_run, ExecutionDiagnostics, ExecutionEvent, Feature, FeatureSet, Graph, GraphBuilder,
         MatmulMetrics, NoopBackend, Objective, Optimization, ParamValue, PerfReport,
         PipelineStrategy, Priority, ResourceGraph, ResourceId, ResourceKind, ResourceNode,
-        Runtime, Scheduler, SchedulerErrorCode, ShaderId, SyncStrategy, TaskGraph, TaskId,
-        TaskKind, TaskNode, TimedSample, FRAME_BUDGET_120HZ_MICROS, UCF_MAGIC, UCF_WIRE_MAJOR,
+        Runtime, Scheduler, SchedulerErrorCode, ExecutionBindings, ExternalBuffer, ImmediateBridge,
+        ImmediateEvent, ImmediateStream, ExecEvent, ExecStream, StreamEventBridge, ShaderId,
+        SyncStrategy, TaskGraph, TaskId, TaskKind, TaskNode, TimedSample, FRAME_BUDGET_120HZ_MICROS,
+        UCF_MAGIC, UCF_WIRE_MAJOR,
     };
 
     #[cfg(feature = "cpu")]
-    pub use crate::backend_cpu::{shared_store, CpuBackend, HostStore};
+    pub use crate::backend_cpu::{shared_store, CpuBackend, HostExternalBuffer, HostStore};
 
     #[cfg(feature = "cpu")]
-    pub use crate::CpuSession;
+    pub use crate::{immediate_event, immediate_stream, CpuSession};
 
     #[cfg(feature = "cuda")]
     pub use crate::backend_cuda::CudaBackend;

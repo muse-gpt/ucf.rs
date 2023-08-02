@@ -1,7 +1,7 @@
 use ucf_capability::CapabilityReport;
 use ucf_ir::Graph;
 use ucf_optimize::{apply, Optimization};
-use ucf_scheduler::{Backend, Scheduler};
+use ucf_scheduler::{Backend, ExecutionBindings, Scheduler};
 
 use crate::capacity::{apply_capacity, CapacityPolicy};
 use crate::diagnostics::ExecutionDiagnostics;
@@ -11,6 +11,7 @@ pub struct Runtime {
     scheduler: Scheduler,
     capacity: CapacityPolicy,
     diagnostics: ExecutionDiagnostics,
+    bindings: ExecutionBindings,
 }
 
 impl Runtime {
@@ -20,6 +21,7 @@ impl Runtime {
             scheduler: Scheduler::new(),
             capacity: CapacityPolicy::default(),
             diagnostics: ExecutionDiagnostics::default(),
+            bindings: ExecutionBindings::new(),
         }
     }
 
@@ -29,6 +31,7 @@ impl Runtime {
             scheduler: Scheduler::new(),
             capacity,
             diagnostics: ExecutionDiagnostics::default(),
+            bindings: ExecutionBindings::new(),
         }
     }
 
@@ -40,6 +43,16 @@ impl Runtime {
     /// Current capacity policy.
     pub fn capacity(&self) -> CapacityPolicy {
         self.capacity
+    }
+
+    /// Replace live external buffer / stream bindings (applied on next prepare).
+    pub fn set_bindings(&mut self, bindings: ExecutionBindings) {
+        self.bindings = bindings;
+    }
+
+    /// Borrow current bindings.
+    pub fn bindings(&self) -> &ExecutionBindings {
+        &self.bindings
     }
 
     /// Capability rows for every registered backend.
@@ -57,10 +70,20 @@ impl Runtime {
         self.diagnostics.clear();
     }
 
+    fn apply_bindings(&mut self) -> ucf_scheduler::Result<()> {
+        if self.bindings.buffers.is_empty() && self.bindings.stream.is_none() {
+            return Ok(());
+        }
+        self.diagnostics
+            .push_simple("resource_bind", None, None, "runtime");
+        self.scheduler.bind_externals(&self.bindings)
+    }
+
     /// Validate and prepare resources on every backend (idempotent on size match).
     pub fn prepare(&mut self, graph: &Graph) -> ucf_scheduler::Result<()> {
         self.diagnostics
             .push_simple("graph_validate", None, None, "runtime");
+        self.apply_bindings()?;
         let result = self.scheduler.prepare(graph);
         if result.is_ok() {
             self.diagnostics
@@ -117,6 +140,7 @@ impl Runtime {
         apply_capacity(&mut graph, self.capacity)?;
         self.diagnostics
             .push_simple("graph_validate", None, None, "runtime");
+        self.apply_bindings()?;
         let result = self.scheduler.execute(&graph);
         if result.is_ok() {
             self.diagnostics
