@@ -10,6 +10,7 @@ pub type CUstream = *mut c_void;
 pub type CUexternalMemory = *mut c_void;
 pub type CUgraph = *mut c_void;
 pub type CUgraphExec = *mut c_void;
+pub type CUevent = *mut c_void;
 
 pub const CUDA_SUCCESS: CUresult = 0;
 pub const CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE: u32 = 5;
@@ -123,3 +124,7 @@ pub type CuExternalMemoryGetMappedBuffer = unsafe extern "C" fn(
     *const CUDA_EXTERNAL_MEMORY_BUFFER_DESC,
 ) -> CUresult;
 pub type CuDestroyExternalMemory = unsafe extern "C" fn(CUexternalMemory) -> CUresult;
+pub type CuEventCreate = unsafe extern "C" fn(*mut CUevent, u32) -> CUresult;
+pub type CuEventDestroy = unsafe extern "C" fn(CUevent) -> CUresult;
+pub type CuEventRecord = unsafe extern "C" fn(CUevent, CUstream) -> CUresult;
+pub type CuStreamWaitEvent = unsafe extern "C" fn(CUstream, CUevent, u32) -> CUresult;
