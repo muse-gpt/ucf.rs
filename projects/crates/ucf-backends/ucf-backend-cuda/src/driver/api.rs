@@ -24,6 +24,8 @@ pub struct CudaDriver {
     cuDeviceGet: CuDeviceGet,
     cuCtxCreate: CuCtxCreate,
     cuCtxDestroy: CuCtxDestroy,
+    cuDevicePrimaryCtxRetain: CuDevicePrimaryCtxRetain,
+    cuDevicePrimaryCtxRelease: CuDevicePrimaryCtxRelease,
     cuMemAlloc: CuMemAlloc,
     cuMemFree: CuMemFree,
     cuMemcpyHtoD: CuMemcpyHtoD,
@@ -50,7 +52,10 @@ pub struct CudaDriver {
     cuEventDestroy: CuEventDestroy,
     cuEventRecord: CuEventRecord,
     cuStreamWaitEvent: CuStreamWaitEvent,
+    device: CUdevice,
     context: CUcontext,
+    /// When true, Drop releases the primary context instead of destroying a fresh one.
+    primary_context: bool,
     /// Backend-owned default stream (destroyed on Drop).
     stream: CUstream,
     /// Optional adapter-preferred submit stream (not destroyed here).
@@ -58,7 +63,17 @@ pub struct CudaDriver {
 }
 
 impl CudaDriver {
+    /// Open device with a fresh context (`cuCtxCreate`). Prefer [`Self::new_primary`] for Titan interop.
     pub fn new(device_index: u32) -> Result<Self, DriverError> {
+        Self::open(device_index, false)
+    }
+
+    /// Open device via `cuDevicePrimaryCtxRetain` (same context Titan uses).
+    pub fn new_primary(device_index: u32) -> Result<Self, DriverError> {
+        Self::open(device_index, true)
+    }
+
+    fn open(device_index: u32, primary_context: bool) -> Result<Self, DriverError> {
         let lib_path = driver_library_path();
         let lib = unsafe { Library::new(&lib_path) }.map_err(|e| {
             DriverError::new(
@@ -72,6 +87,10 @@ impl CudaDriver {
             let cuDeviceGet = load_fn!(lib, cuDeviceGet, CuDeviceGet);
             let cuCtxCreate = load_fn!(lib, cuCtxCreate, CuCtxCreate);
             let cuCtxDestroy = load_fn!(lib, cuCtxDestroy, CuCtxDestroy);
+            let cuDevicePrimaryCtxRetain =
+                load_fn!(lib, cuDevicePrimaryCtxRetain, CuDevicePrimaryCtxRetain);
+            let cuDevicePrimaryCtxRelease =
+                load_fn!(lib, cuDevicePrimaryCtxRelease, CuDevicePrimaryCtxRelease);
             let cuMemAlloc = load_fn!(lib, cuMemAlloc_v2, CuMemAlloc);
             let cuMemFree = load_fn!(lib, cuMemFree_v2, CuMemFree);
             let cuMemcpyHtoD = load_fn!(lib, cuMemcpyHtoD_v2, CuMemcpyHtoD);
@@ -112,7 +131,14 @@ impl CudaDriver {
             check((cuDeviceGet)(&mut device, device_index as i32), "cuDeviceGet")?;
 
             let mut context: CUcontext = std::ptr::null_mut();
-            check((cuCtxCreate)(&mut context, 0, device), "cuCtxCreate")?;
+            if primary_context {
+                check(
+                    (cuDevicePrimaryCtxRetain)(&mut context, device),
+                    "cuDevicePrimaryCtxRetain",
+                )?;
+            } else {
+                check((cuCtxCreate)(&mut context, 0, device), "cuCtxCreate")?;
+            }
 
             let mut stream: CUstream = std::ptr::null_mut();
             check((cuStreamCreate)(&mut stream, 0), "cuStreamCreate")?;
@@ -123,6 +149,8 @@ impl CudaDriver {
                 cuDeviceGet,
                 cuCtxCreate,
                 cuCtxDestroy,
+                cuDevicePrimaryCtxRetain,
+                cuDevicePrimaryCtxRelease,
                 cuMemAlloc,
                 cuMemFree,
                 cuMemcpyHtoD,
@@ -149,7 +177,9 @@ impl CudaDriver {
                 cuEventDestroy,
                 cuEventRecord,
                 cuStreamWaitEvent,
+                device,
                 context,
+                primary_context,
                 stream,
                 override_stream: std::sync::Mutex::new(None),
             })
@@ -633,7 +663,11 @@ impl Drop for CudaDriver {
     fn drop(&mut self) {
         unsafe {
             let _ = (self.cuStreamDestroy)(self.stream);
-            let _ = (self.cuCtxDestroy)(self.context);
+            if self.primary_context {
+                let _ = (self.cuDevicePrimaryCtxRelease)(self.device);
+            } else {
+                let _ = (self.cuCtxDestroy)(self.context);
+            }
         }
     }
 }
