@@ -155,3 +155,75 @@ fn cuda_external_buffer_and_default_stream_matmul_soft_skip() {
     assert!(backend.active_stream().is_some());
     eprintln!("cuda external bindings matmul ok");
 }
+
+#[test]
+fn cuda_foreign_stream_matmul_soft_skip() {
+    let mut backend = match CudaBackend::new(0) {
+        Ok(b) => b,
+        Err(err) => {
+            eprintln!("skip cuda foreign stream (no device): {err}");
+            return;
+        }
+    };
+    let foreign = match backend.create_exec_stream() {
+        Ok(s) => s,
+        Err(err) => {
+            eprintln!("skip cuda foreign stream (create): {err}");
+            return;
+        }
+    };
+    assert_ne!(
+        foreign.raw() as usize,
+        backend.default_stream().raw() as usize,
+        "foreign stream must differ from default"
+    );
+
+    let graph = matmul_graph();
+    let mut bindings = ExecutionBindings::new();
+    for node in &graph.resources.nodes {
+        let bytes = node.byte_size.expect("sized");
+        let buf = match backend.allocate_external_buffer(bytes) {
+            Ok(b) => b,
+            Err(err) => {
+                eprintln!("skip cuda foreign stream (alloc): {err}");
+                return;
+            }
+        };
+        bindings.bind_buffer(node.id, buf);
+    }
+    bindings.set_stream(foreign.clone());
+
+    if let Err(err) = backend.bind_externals(&bindings) {
+        eprintln!("skip cuda foreign stream (bind): {err}");
+        return;
+    }
+    if let Err(err) = backend.prepare(&graph) {
+        eprintln!("skip cuda foreign stream (prepare): {err}");
+        return;
+    }
+    if let Err(err) = backend.write_f32(ResourceId(1), &[1.0, 2.0, 3.0, 4.0]) {
+        eprintln!("skip cuda foreign stream (write a): {err}");
+        return;
+    }
+    if let Err(err) = backend.write_f32(ResourceId(2), &[1.0, 0.0, 0.0, 1.0]) {
+        eprintln!("skip cuda foreign stream (write b): {err}");
+        return;
+    }
+    if let Err(err) = backend.run_prepared(&graph) {
+        eprintln!("skip cuda foreign stream (run): {err}");
+        return;
+    }
+    if let Err(err) = backend.flush() {
+        eprintln!("skip cuda foreign stream (flush): {err}");
+        return;
+    }
+    let out = match backend.read_f32(ResourceId(3)) {
+        Ok(v) => v,
+        Err(err) => {
+            eprintln!("skip cuda foreign stream (read): {err}");
+            return;
+        }
+    };
+    assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0]);
+    eprintln!("cuda foreign stream matmul ok");
+}

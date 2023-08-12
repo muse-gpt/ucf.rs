@@ -51,7 +51,10 @@ pub struct CudaDriver {
     cuEventRecord: CuEventRecord,
     cuStreamWaitEvent: CuStreamWaitEvent,
     context: CUcontext,
+    /// Backend-owned default stream (destroyed on Drop).
     stream: CUstream,
+    /// Optional adapter-preferred submit stream (not destroyed here).
+    override_stream: std::sync::Mutex<Option<CUstream>>,
 }
 
 impl CudaDriver {
@@ -148,6 +151,7 @@ impl CudaDriver {
                 cuStreamWaitEvent,
                 context,
                 stream,
+                override_stream: std::sync::Mutex::new(None),
             })
         }
     }
@@ -155,6 +159,38 @@ impl CudaDriver {
     /// Default submission stream owned by this driver.
     pub fn stream(&self) -> CUstream {
         self.stream
+    }
+
+    /// Stream used for launches / sync (override if set, else default).
+    pub fn active_stream(&self) -> CUstream {
+        self.override_stream
+            .lock()
+            .ok()
+            .and_then(|g| *g)
+            .unwrap_or(self.stream)
+    }
+
+    /// Prefer an adapter-owned stream for subsequent submits (`None` restores default).
+    pub fn set_override_stream(&self, stream: Option<CUstream>) {
+        if let Ok(mut guard) = self.override_stream.lock() {
+            *guard = stream;
+        }
+    }
+
+    /// Create an additional stream in this context (caller must destroy).
+    pub fn create_stream(&self) -> Result<CUstream, DriverError> {
+        let mut stream: CUstream = std::ptr::null_mut();
+        unsafe {
+            check((self.cuStreamCreate)(&mut stream, 0), "cuStreamCreate")?;
+        }
+        Ok(stream)
+    }
+
+    /// Destroy a stream previously returned by [`Self::create_stream`].
+    pub fn destroy_stream(&self, stream: CUstream) -> Result<(), DriverError> {
+        unsafe {
+            check((self.cuStreamDestroy)(stream), "cuStreamDestroy")
+        }
     }
 
     pub fn mem_alloc(&self, bytes: usize) -> Result<CUdeviceptr, DriverError> {
@@ -208,7 +244,7 @@ impl CudaDriver {
     ) -> Result<(), DriverError> {
         unsafe {
             check(
-                (self.cuMemcpyDtoDAsync)(dst, src, bytes, self.stream),
+                (self.cuMemcpyDtoDAsync)(dst, src, bytes, self.active_stream()),
                 "cuMemcpyDtoDAsync",
             )?;
         }
@@ -397,24 +433,27 @@ impl CudaDriver {
                     1,
                     1,
                     0,
-                    self.stream,
+                    self.active_stream(),
                     params.as_mut_ptr(),
                     std::ptr::null_mut(),
                 ),
                 "cuLaunchKernel",
             )?;
             if sync {
-                check((self.cuStreamSynchronize)(self.stream), "cuStreamSynchronize")?;
+                check(
+                    (self.cuStreamSynchronize)(self.active_stream()),
+                    "cuStreamSynchronize",
+                )?;
             }
         }
         Ok(())
     }
 
-    /// Begin recording work on the default stream into a CUDA Graph.
+    /// Begin recording work on the active stream into a CUDA Graph.
     pub fn stream_begin_capture(&self) -> Result<(), DriverError> {
         unsafe {
             check(
-                (self.cuStreamBeginCapture)(self.stream, CU_STREAM_CAPTURE_MODE_GLOBAL),
+                (self.cuStreamBeginCapture)(self.active_stream(), CU_STREAM_CAPTURE_MODE_GLOBAL),
                 "cuStreamBeginCapture",
             )
         }
@@ -425,7 +464,7 @@ impl CudaDriver {
         let mut graph: CUgraph = std::ptr::null_mut();
         unsafe {
             check(
-                (self.cuStreamEndCapture)(self.stream, &mut graph),
+                (self.cuStreamEndCapture)(self.active_stream(), &mut graph),
                 "cuStreamEndCapture",
             )?;
         }
@@ -444,14 +483,17 @@ impl CudaDriver {
         Ok(exec)
     }
 
-    /// Launch an instantiated graph on the default stream and synchronize.
+    /// Launch an instantiated graph on the active stream and synchronize.
     pub fn graph_launch(&self, exec: CUgraphExec) -> Result<(), DriverError> {
         unsafe {
             check(
-                (self.cuGraphLaunch)(exec, self.stream),
+                (self.cuGraphLaunch)(exec, self.active_stream()),
                 "cuGraphLaunch",
             )?;
-            check((self.cuStreamSynchronize)(self.stream), "cuStreamSynchronize")?;
+            check(
+                (self.cuStreamSynchronize)(self.active_stream()),
+                "cuStreamSynchronize",
+            )?;
         }
         Ok(())
     }
@@ -574,7 +616,10 @@ impl CudaDriver {
 
     pub fn synchronize(&self) -> Result<(), DriverError> {
         unsafe {
-            check((self.cuStreamSynchronize)(self.stream), "cuStreamSynchronize")?;
+            check(
+                (self.cuStreamSynchronize)(self.active_stream()),
+                "cuStreamSynchronize",
+            )?;
         }
         Ok(())
     }
