@@ -80,6 +80,18 @@ impl Runtime {
         self.diagnostics.clear();
     }
 
+    fn record_backend_switches(&mut self) {
+        for sw in self.scheduler.take_backend_switches() {
+            self.diagnostics.push(
+                ExecutionEvent::builder(kinds::BACKEND_SWITCH, &sw.to_backend)
+                    .task_id(sw.at_task.0)
+                    .stream_id(format!("{}->{}", sw.from_backend, sw.to_backend))
+                    .stamp_now()
+                    .build(),
+            );
+        }
+    }
+
     fn apply_bindings(&mut self) -> ucf_scheduler::Result<()> {
         if self.bindings.buffers.is_empty() && self.bindings.stream.is_none() {
             return Ok(());
@@ -144,6 +156,7 @@ impl Runtime {
         let result = self.scheduler.submit_prepared(&graph);
         match &result {
             Ok(()) => {
+                self.record_backend_switches();
                 self.diagnostics.push(
                     ExecutionEvent::builder(kinds::TASK_SUBMIT, "runtime")
                         .stamp_now()
@@ -186,6 +199,7 @@ impl Runtime {
                     None,
                     "runtime",
                 );
+                self.record_backend_switches();
                 self.diagnostics
                     .push_simple(kinds::TASK_SUBMIT, None, None, "runtime");
                 self.diagnostics
@@ -326,5 +340,76 @@ mod tests {
             .first_of_kind(kinds::BACKEND_ERROR)
             .expect("error event");
         assert_eq!(e.error_code, Some(ucf_scheduler::ErrorCode::Ir));
+    }
+
+    #[test]
+    fn run_emits_backend_switch_when_crossing_backends() {
+        use std::collections::BTreeMap;
+        use ucf_ir::{DepEdge, DepKind, ParamValue, TaskId, TaskKind, TaskNode};
+
+        struct NamedBackend {
+            name: String,
+        }
+
+        impl ucf_scheduler::Backend for NamedBackend {
+            fn name(&self) -> &str {
+                &self.name
+            }
+
+            fn features(&self) -> ucf_capability::FeatureSet {
+                ucf_capability::FeatureSet::new()
+            }
+
+            fn submit_task(
+                &mut self,
+                _graph: &Graph,
+                _task: &ucf_ir::TaskNode,
+            ) -> ucf_scheduler::Result<()> {
+                Ok(())
+            }
+        }
+
+        fn pinned(id: u64, backend: &str) -> TaskNode {
+            TaskNode {
+                id: TaskId(id),
+                kind: TaskKind::Custom("x".into()),
+                shader: ucf_ir::ShaderId(id),
+                params: BTreeMap::from([(
+                    "backend".into(),
+                    ParamValue::Str(backend.into()),
+                )]),
+                dispatch: Default::default(),
+                objective: ucf_ir::Objective::MaxThroughput,
+                priority: ucf_ir::Priority::Batch,
+            }
+        }
+
+        let graph = Graph {
+            resources: ResourceGraph { nodes: vec![] },
+            tasks: TaskGraph {
+                nodes: vec![pinned(1, "dx12"), pinned(2, "cuda")],
+                edges: vec![DepEdge {
+                    from_task: Some(TaskId(1)),
+                    from_resource: None,
+                    to_task: TaskId(2),
+                    kind: DepKind::Execution,
+                }],
+            },
+        };
+        let mut rt = Runtime::new();
+        rt.register_backend(Box::new(NamedBackend {
+            name: "dx12".into(),
+        }));
+        rt.register_backend(Box::new(NamedBackend {
+            name: "cuda".into(),
+        }));
+        rt.run(&graph).expect("cross backend run");
+        let sw = rt
+            .diagnostics()
+            .first_of_kind(kinds::BACKEND_SWITCH)
+            .expect("backend_switch");
+        assert_eq!(sw.backend, "cuda");
+        assert_eq!(sw.task_id, Some(2));
+        assert_eq!(sw.stream_id.as_deref(), Some("dx12->cuda"));
     }
 }
