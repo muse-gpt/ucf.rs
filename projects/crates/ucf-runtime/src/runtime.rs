@@ -4,7 +4,7 @@ use ucf_optimize::{apply, Optimization};
 use ucf_scheduler::{Backend, ExecutionBindings, Scheduler};
 
 use crate::capacity::{apply_capacity, CapacityPolicy};
-use crate::diagnostics::ExecutionDiagnostics;
+use crate::diagnostics::{kinds, ExecutionDiagnostics, ExecutionEvent};
 
 /// Owns backends, capacity policy, and graph execution.
 pub struct Runtime {
@@ -65,6 +65,16 @@ impl Runtime {
         &self.diagnostics
     }
 
+    /// Mutable diagnostics (sessions stamp upload / readback).
+    pub fn diagnostics_mut(&mut self) -> &mut ExecutionDiagnostics {
+        &mut self.diagnostics
+    }
+
+    /// Assign a graph id stamped onto subsequent diagnostic events.
+    pub fn set_graph_id(&mut self, id: Option<u64>) {
+        self.diagnostics.set_graph_id(id);
+    }
+
     /// Clear diagnostics between runs.
     pub fn clear_diagnostics(&mut self) {
         self.diagnostics.clear();
@@ -74,20 +84,33 @@ impl Runtime {
         if self.bindings.buffers.is_empty() && self.bindings.stream.is_none() {
             return Ok(());
         }
-        self.diagnostics
-            .push_simple("resource_bind", None, None, "runtime");
-        self.scheduler.bind_externals(&self.bindings)
+        self.diagnostics.push_simple(
+            kinds::RESOURCE_BIND,
+            None,
+            None,
+            "runtime",
+        );
+        let result = self.scheduler.bind_externals(&self.bindings);
+        if let Err(ref err) = result {
+            self.diagnostics.push_error("runtime", err.code());
+        }
+        result
     }
 
     /// Validate and prepare resources on every backend (idempotent on size match).
     pub fn prepare(&mut self, graph: &Graph) -> ucf_scheduler::Result<()> {
         self.diagnostics
-            .push_simple("graph_validate", None, None, "runtime");
+            .push_simple(kinds::GRAPH_VALIDATE, None, None, "runtime");
         self.apply_bindings()?;
         let result = self.scheduler.prepare(graph);
-        if result.is_ok() {
-            self.diagnostics
-                .push_simple("resource_prepare", None, None, "runtime");
+        match &result {
+            Ok(()) => self.diagnostics.push_simple(
+                kinds::RESOURCE_PREPARE,
+                None,
+                None,
+                "runtime",
+            ),
+            Err(err) => self.diagnostics.push_error("runtime", err.code()),
         }
         result
     }
@@ -95,9 +118,11 @@ impl Runtime {
     /// Flush every registered backend.
     pub fn flush(&mut self) -> ucf_scheduler::Result<()> {
         let result = self.scheduler.flush();
-        if result.is_ok() {
-            self.diagnostics
-                .push_simple("flush", None, None, "runtime");
+        match &result {
+            Ok(()) => self
+                .diagnostics
+                .push_simple(kinds::FLUSH, None, None, "runtime"),
+            Err(err) => self.diagnostics.push_error("runtime", err.code()),
         }
         result
     }
@@ -117,9 +142,20 @@ impl Runtime {
         apply(&mut graph, opts)?;
         apply_capacity(&mut graph, self.capacity)?;
         let result = self.scheduler.submit_prepared(&graph);
-        if result.is_ok() {
-            self.diagnostics
-                .push_simple("task_submit", None, None, "runtime");
+        match &result {
+            Ok(()) => {
+                self.diagnostics.push(
+                    ExecutionEvent::builder(kinds::TASK_SUBMIT, "runtime")
+                        .stamp_now()
+                        .build(),
+                );
+                self.diagnostics.push(
+                    ExecutionEvent::builder(kinds::TASK_COMPLETE, "runtime")
+                        .stamp_now()
+                        .build(),
+                );
+            }
+            Err(err) => self.diagnostics.push_error("runtime", err.code()),
         }
         result
     }
@@ -139,14 +175,23 @@ impl Runtime {
         apply(&mut graph, opts)?;
         apply_capacity(&mut graph, self.capacity)?;
         self.diagnostics
-            .push_simple("graph_validate", None, None, "runtime");
+            .push_simple(kinds::GRAPH_VALIDATE, None, None, "runtime");
         self.apply_bindings()?;
         let result = self.scheduler.execute(&graph);
-        if result.is_ok() {
-            self.diagnostics
-                .push_simple("resource_prepare", None, None, "runtime");
-            self.diagnostics
-                .push_simple("task_submit", None, None, "runtime");
+        match &result {
+            Ok(()) => {
+                self.diagnostics.push_simple(
+                    kinds::RESOURCE_PREPARE,
+                    None,
+                    None,
+                    "runtime",
+                );
+                self.diagnostics
+                    .push_simple(kinds::TASK_SUBMIT, None, None, "runtime");
+                self.diagnostics
+                    .push_simple(kinds::TASK_COMPLETE, None, None, "runtime");
+            }
+            Err(err) => self.diagnostics.push_error("runtime", err.code()),
         }
         result
     }
@@ -243,10 +288,43 @@ mod tests {
         let mut rt = Runtime::new();
         rt.register_backend(Box::new(NoopBackend));
         assert!(!rt.capabilities().backends.is_empty());
+        rt.set_graph_id(Some(7));
         rt.prepare(&graph).expect("prepare");
         rt.flush().expect("flush");
-        assert!(rt.diagnostics().contains_kind("graph_validate"));
-        assert!(rt.diagnostics().contains_kind("resource_prepare"));
-        assert!(rt.diagnostics().contains_kind("flush"));
+        assert!(rt.diagnostics().contains_kind(kinds::GRAPH_VALIDATE));
+        assert!(rt.diagnostics().contains_kind(kinds::RESOURCE_PREPARE));
+        assert!(rt.diagnostics().contains_kind(kinds::FLUSH));
+        assert_eq!(
+            rt.diagnostics()
+                .first_of_kind(kinds::GRAPH_VALIDATE)
+                .unwrap()
+                .graph_id,
+            Some(7)
+        );
+    }
+
+    #[test]
+    fn prepare_error_emits_backend_error_event() {
+        let bad = Graph {
+            resources: ResourceGraph { nodes: vec![] },
+            tasks: TaskGraph {
+                nodes: vec![],
+                edges: vec![ucf_ir::DepEdge {
+                    from_task: None,
+                    from_resource: Some(ResourceId(1)),
+                    to_task: ucf_ir::TaskId(1),
+                    kind: ucf_ir::DepKind::Data,
+                }],
+            },
+        };
+        let mut rt = Runtime::new();
+        rt.register_backend(Box::new(NoopBackend));
+        let err = rt.prepare(&bad).expect_err("invalid");
+        assert_eq!(err.code(), ucf_scheduler::ErrorCode::Ir);
+        let e = rt
+            .diagnostics()
+            .first_of_kind(kinds::BACKEND_ERROR)
+            .expect("error event");
+        assert_eq!(e.error_code, Some(ucf_scheduler::ErrorCode::Ir));
     }
 }
