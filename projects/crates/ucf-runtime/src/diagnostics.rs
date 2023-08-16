@@ -37,6 +37,8 @@ pub mod kinds {
     pub const READBACK: &str = "readback";
     /// Backend flush / synchronize.
     pub const FLUSH: &str = "flush";
+    /// Capacity policy moved a resource between domains (logical placement).
+    pub const RESOURCE_MIGRATE: &str = "resource_migrate";
     /// Stable failure marker with [`super::ExecutionEvent::error_code`].
     pub const BACKEND_ERROR: &str = "backend_error";
 }

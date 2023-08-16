@@ -92,6 +92,19 @@ impl Runtime {
         }
     }
 
+    fn record_resource_migrations(&mut self, migrations: &[crate::capacity::ResourceMigration]) {
+        for m in migrations {
+            self.diagnostics.push(
+                ExecutionEvent::builder(kinds::RESOURCE_MIGRATE, "runtime")
+                    .resource_id(m.resource_id.0)
+                    .host_transfer(m.to == ucf_ir::Domain::Host)
+                    .stream_id(format!("{:?}->{:?}", m.from, m.to))
+                    .stamp_now()
+                    .build(),
+            );
+        }
+    }
+
     fn apply_bindings(&mut self) -> ucf_scheduler::Result<()> {
         if self.bindings.buffers.is_empty() && self.bindings.stream.is_none() {
             return Ok(());
@@ -152,7 +165,8 @@ impl Runtime {
     ) -> ucf_scheduler::Result<()> {
         let mut graph = graph.clone();
         apply(&mut graph, opts)?;
-        apply_capacity(&mut graph, self.capacity)?;
+        let migrations = apply_capacity(&mut graph, self.capacity)?;
+        self.record_resource_migrations(&migrations);
         let result = self.scheduler.submit_prepared(&graph);
         match &result {
             Ok(()) => {
@@ -186,7 +200,8 @@ impl Runtime {
     ) -> ucf_scheduler::Result<()> {
         let mut graph = graph.clone();
         apply(&mut graph, opts)?;
-        apply_capacity(&mut graph, self.capacity)?;
+        let migrations = apply_capacity(&mut graph, self.capacity)?;
+        self.record_resource_migrations(&migrations);
         self.diagnostics
             .push_simple(kinds::GRAPH_VALIDATE, None, None, "runtime");
         self.apply_bindings()?;
@@ -286,6 +301,13 @@ mod tests {
         });
         rt.register_backend(Box::new(NoopBackend));
         rt.run(&graph).expect("migrate then run");
+        assert!(rt.diagnostics().contains_kind(kinds::RESOURCE_MIGRATE));
+        let m = rt
+            .diagnostics()
+            .first_of_kind(kinds::RESOURCE_MIGRATE)
+            .expect("migration event");
+        assert_eq!(m.resource_id, Some(1));
+        assert!(m.host_transfer);
     }
 
     #[test]
