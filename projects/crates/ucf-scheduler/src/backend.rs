@@ -3,6 +3,7 @@ use ucf_ir::{Graph, TaskNode};
 
 use crate::error::Result;
 use crate::exec::{ExecStream, ExecutionBindings, StreamEventBridge};
+use crate::probe::BackendProbeEvent;
 
 /// Maps UCF IR onto a concrete API (CUDA, DX12, Vulkan, CPU, …).
 pub trait Backend: Send + Sync {
@@ -43,5 +44,10 @@ pub trait Backend: Send + Sync {
     /// Stream currently preferred for submits (if any).
     fn active_stream(&self) -> Option<&dyn ExecStream> {
         None
+    }
+
+    /// Drain probe events accumulated since the last take (module cache, compile, …).
+    fn take_probe_events(&mut self) -> Vec<BackendProbeEvent> {
+        Vec::new()
     }
 }

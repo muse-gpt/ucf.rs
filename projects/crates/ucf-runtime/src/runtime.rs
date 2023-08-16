@@ -92,6 +92,16 @@ impl Runtime {
         }
     }
 
+    fn record_backend_probes(&mut self) {
+        for probe in self.scheduler.take_backend_probes() {
+            let mut b = ExecutionEvent::builder(probe.kind, &probe.backend).stamp_now();
+            if let Some(key) = probe.shader_key {
+                b = b.stream_id(format!("key:{key}"));
+            }
+            self.diagnostics.push(b.build());
+        }
+    }
+
     fn record_resource_migrations(&mut self, migrations: &[crate::capacity::ResourceMigration]) {
         for m in migrations {
             self.diagnostics.push(
@@ -171,6 +181,7 @@ impl Runtime {
         match &result {
             Ok(()) => {
                 self.record_backend_switches();
+                self.record_backend_probes();
                 self.diagnostics.push(
                     ExecutionEvent::builder(kinds::TASK_SUBMIT, "runtime")
                         .stamp_now()
@@ -215,6 +226,7 @@ impl Runtime {
                     "runtime",
                 );
                 self.record_backend_switches();
+                self.record_backend_probes();
                 self.diagnostics
                     .push_simple(kinds::TASK_SUBMIT, None, None, "runtime");
                 self.diagnostics
