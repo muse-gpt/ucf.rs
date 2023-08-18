@@ -165,10 +165,18 @@ impl ExecutionEventBuilder {
 }
 
 fn unix_millis_now() -> Option<u64> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_millis() as u64)
+    // `std::time::SystemTime::now` traps on `wasm32-unknown-unknown` (no OS clock).
+    #[cfg(target_arch = "wasm32")]
+    {
+        None
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .map(|d| d.as_millis() as u64)
+    }
 }
 
 /// Accumulated events for one application session or run batch.

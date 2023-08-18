@@ -1,0 +1,122 @@
+//! 通过 `wasmtime` 加载 `ucf_wasm.wasm` 并验收 C ABI 应用契约。
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use wasmtime::{Engine, Instance, Module, Store, TypedFunc};
+
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../..")
+        .canonicalize()
+        .expect("workspace root")
+}
+
+fn wasm_artifact() -> PathBuf {
+    workspace_root().join("target/wasm32-unknown-unknown/release/ucf_wasm.wasm")
+}
+
+fn ensure_wasm_built(path: &Path) {
+    let status = Command::new("cargo")
+        .current_dir(workspace_root())
+        .args([
+            "build",
+            "-p",
+            "ucf-wasm",
+            "--target",
+            "wasm32-unknown-unknown",
+            "--release",
+        ])
+        .status()
+        .expect("spawn cargo build for ucf-wasm");
+    assert!(status.success(), "failed to build ucf-wasm for wasm32");
+    assert!(path.is_file(), "missing {} after build", path.display());
+}
+
+fn load_instance(path: &Path) -> (Store<()>, Instance) {
+    let engine = Engine::default();
+    let module = Module::from_file(&engine, path).expect("load wasm module");
+    let mut store = Store::new(&engine, ());
+    let instance = Instance::new(&mut store, &module, &[]).expect("instantiate ucf_wasm");
+    (store, instance)
+}
+
+#[test]
+fn wasm_exports_application_contract_matmul() {
+    let path = wasm_artifact();
+    ensure_wasm_built(&path);
+    let (mut store, instance) = load_instance(&path);
+
+    let has_cpu: TypedFunc<(), i32> = instance
+        .get_typed_func(&mut store, "ucf_has_cpu_backend")
+        .expect("ucf_has_cpu_backend");
+    assert_eq!(has_cpu.call(&mut store, ()).expect("call"), 1);
+
+    let triple = instance
+        .get_func(&mut store, "ucf_target_triple")
+        .expect("ucf_target_triple");
+    let mut results = [wasmtime::Val::I32(0)];
+    triple
+        .call(&mut store, &[], &mut results)
+        .expect("call triple");
+    let ptr = match results[0] {
+        wasmtime::Val::I32(p) => p as u32,
+        _ => panic!("unexpected triple return"),
+    };
+    assert!(ptr > 0);
+
+    let matmul: TypedFunc<(i32,), i32> = instance
+        .get_typed_func(&mut store, "ucf_application_contract_matmul")
+        .expect("ucf_application_contract_matmul");
+
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .expect("export memory");
+    let out_ptr: i32 = 64;
+    for i in 0..4 {
+        memory
+            .write(&mut store, (out_ptr as usize + i * 4), &0f32.to_le_bytes())
+            .expect("init out slot");
+    }
+
+    let status = matmul.call(&mut store, (out_ptr,)).expect("matmul contract");
+    assert_eq!(status, 0, "contract failed with code {status}");
+
+    let mut buf = [0u8; 4];
+    let mut out = [0f32; 4];
+    for (i, slot) in out.iter_mut().enumerate() {
+        memory
+            .read(&store, out_ptr as usize + i * 4, &mut buf)
+            .expect("read f32");
+        *slot = f32::from_le_bytes(buf);
+    }
+    assert_eq!(out, ucf_wasm::EXPECTED_MATMUL);
+}
+
+#[test]
+fn wasm_exports_application_contract_diag_mask() {
+    let path = wasm_artifact();
+    ensure_wasm_built(&path);
+    let (mut store, instance) = load_instance(&path);
+
+    let diag: TypedFunc<(i32,), i32> = instance
+        .get_typed_func(&mut store, "ucf_application_contract_diag_mask")
+        .expect("ucf_application_contract_diag_mask");
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .expect("export memory");
+    let out_ptr = 128i32;
+    memory
+        .write(&mut store, out_ptr as usize, &0u32.to_le_bytes())
+        .expect("init mask");
+
+    let status = diag.call(&mut store, (out_ptr,)).expect("diag contract");
+    assert_eq!(status, 0);
+
+    let mut buf = [0u8; 4];
+    memory
+        .read(&store, out_ptr as usize, &mut buf)
+        .expect("read mask");
+    let mask = u32::from_le_bytes(buf);
+    assert_eq!(mask, ucf_wasm::EXPECTED_DIAG_MASK);
+}

@@ -41,6 +41,7 @@ members = [
     "projects/crates/ucf-backends/ucf-backend-vulkan",
     "projects/crates/ucf-backends/ucf-backend-rocm",
     "projects/crates/ucf-backends/ucf-backend-cpu",
+    "projects/bindings/ucf-wasm",
 ]
 default-members = [
     "projects/crates/ucf",

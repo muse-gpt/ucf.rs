@@ -26,6 +26,9 @@ projects/crates/
     ├── ucf-backend-vulkan/
     └── ucf-backend-rocm/
 
+projects/bindings/
+    ucf-wasm/           # Wasm cdylib（Web CPU 应用契约）
+
 projects/examples/      # Runnable IR examples (one crate per graph, src/main.rs)
 ```
 
