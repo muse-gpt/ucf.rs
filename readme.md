@@ -29,6 +29,9 @@ projects/crates/
 projects/bindings/
     ucf-wasm/           # Wasm cdylib（Web CPU 应用契约）
 
+projects/platforms/wasm/
+    ucf-unknown-wasm32/ # TS 加载器 + 宿主句柄表
+
 projects/examples/      # Runnable IR examples (one crate per graph, src/main.rs)
 ```
 

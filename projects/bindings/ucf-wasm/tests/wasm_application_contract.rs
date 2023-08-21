@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use wasmtime::{Engine, Instance, Module, Store, TypedFunc};
+use wasmtime::{Engine, Instance, Linker, Module, Store, TypedFunc};
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -37,7 +37,17 @@ fn load_instance(path: &Path) -> (Store<()>, Instance) {
     let engine = Engine::default();
     let module = Module::from_file(&engine, path).expect("load wasm module");
     let mut store = Store::new(&engine, ());
-    let instance = Instance::new(&mut store, &module, &[]).expect("instantiate ucf_wasm");
+    let mut linker = Linker::new(&engine);
+    linker
+        .func_wrap(
+            "ucf_host",
+            "ucf_host_bind_external_buffer",
+            |_: i32, _: i32| -> i32 { 0 },
+        )
+        .expect("define ucf_host_bind_external_buffer");
+    let instance = linker
+        .instantiate(&mut store, &module)
+        .expect("instantiate ucf_wasm");
     (store, instance)
 }
 
@@ -119,4 +129,15 @@ fn wasm_exports_application_contract_diag_mask() {
         .expect("read mask");
     let mask = u32::from_le_bytes(buf);
     assert_eq!(mask, ucf_wasm::EXPECTED_DIAG_MASK);
+}
+
+#[test]
+fn wasm_bind_external_buffer_forwards_to_host_import() {
+    let path = wasm_artifact();
+    ensure_wasm_built(&path);
+    let (mut store, instance) = load_instance(&path);
+    let bind: TypedFunc<(i32, i32), i32> = instance
+        .get_typed_func(&mut store, "ucf_bind_external_buffer")
+        .expect("ucf_bind_external_buffer");
+    assert_eq!(bind.call(&mut store, (4, 9)).expect("bind"), 0);
 }

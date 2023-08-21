@@ -14,3 +14,7 @@ time-travel.*
 # Rust
 target/
 Cargo.lock
+
+# npm（Wasm 平台袋）
+projects/platforms/**/node_modules/
+projects/platforms/**/dist/
