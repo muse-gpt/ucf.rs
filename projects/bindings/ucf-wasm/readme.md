@@ -20,6 +20,7 @@ cargo build -p ucf-wasm --target wasm32-unknown-unknown --release
 | `ucf_bind_external_buffer` | 经 `ucf_host` import 绑定宿主句柄 |
 | `ucf_application_contract_matmul` | 跑 reference Copy→Fill→MatMul 图，写 4 个 `f32`，返回 `0` 或负 `ErrorCode` |
 | `ucf_application_contract_diag_mask` | 诊断事件 kind 位掩码（与 `event_kinds` 子集对齐） |
+| `ucf_color_fill_rgba8` | L0：UCF CPU `Fill` → RGBA8 写入线性内存 |
 
 ## 验收
 

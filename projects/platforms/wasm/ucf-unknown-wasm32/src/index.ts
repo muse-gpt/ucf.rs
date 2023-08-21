@@ -53,6 +53,12 @@ export interface UcfWasmBindings {
     runApplicationContractMatmul(): Float32Array;
     applicationContractDiagMask(): number;
     bindExternalBuffer(resourceId: number, handleId: number): number;
+    colorFillRgba8(
+        width: number,
+        height: number,
+        rgba: [number, number, number, number],
+        outPtr: number,
+    ): number;
     memory: WebAssembly.Memory | undefined;
 }
 
@@ -71,6 +77,15 @@ type WasmExports = {
     ucf_application_contract_matmul: (outPtr: number) => number;
     ucf_application_contract_diag_mask: (outPtr: number) => number;
     ucf_bind_external_buffer: (resourceId: number, handleId: number) => number;
+    ucf_color_fill_rgba8: (
+        width: number,
+        height: number,
+        r: number,
+        g: number,
+        b: number,
+        a: number,
+        outPtr: number,
+    ) => number;
 };
 
 function decodeVersion(code: number): string {
@@ -167,7 +182,57 @@ export async function loadUcf(options: LoadUcfOptions = {}): Promise<UcfWasmBind
         },
         bindExternalBuffer: (resourceId, handleId) =>
             exports.ucf_bind_external_buffer(resourceId, handleId),
+        colorFillRgba8: (width, height, rgba, outPtr) =>
+            exports.ucf_color_fill_rgba8(
+                width,
+                height,
+                rgba[0],
+                rgba[1],
+                rgba[2],
+                rgba[3],
+                outPtr,
+            ),
     };
 }
 
-export default { loadUcf, UcfHostHandleRegistry, rustTarget, platformPackage };
+/** L0 降级：把 wasm 线性内存中的 RGBA8 画到 2D canvas。 */
+export function presentRgba8ToCanvas2d(
+    ctx: CanvasRenderingContext2D,
+    memory: WebAssembly.Memory,
+    outPtr: number,
+    width: number,
+    height: number,
+): void {
+    const bytes = new Uint8ClampedArray(memory.buffer, outPtr, width * height * 4);
+    ctx.putImageData(new ImageData(bytes, width, height), 0, 0);
+}
+
+/**
+ * Fill + readback + `putImageData` 一步（L0 薄门）。
+ */
+export async function presentColorFillL0(
+    canvas: HTMLCanvasElement,
+    rgba: [number, number, number, number],
+    options: LoadUcfOptions = {},
+): Promise<UcfWasmBindings> {
+    const ucf = await loadUcf(options);
+    const width = canvas.width;
+    const height = canvas.height;
+    const outPtr = 4096;
+    const status = ucf.colorFillRgba8(width, height, rgba, outPtr);
+    if (status !== 0) {
+        throw new Error(`ucf_color_fill_rgba8 failed: ${status}`);
+    }
+    const need = width * height * 4;
+    if (outPtr + need > ucf.memory!.buffer.byteLength) {
+        throw new Error("ucf wasm memory too small for rgba8 readback");
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+        throw new Error("canvas 2d context unavailable");
+    }
+    presentRgba8ToCanvas2d(ctx, ucf.memory!, outPtr, width, height);
+    return ucf;
+}
+
+export default { loadUcf, UcfHostHandleRegistry, presentRgba8ToCanvas2d, presentColorFillL0, rustTarget, platformPackage };

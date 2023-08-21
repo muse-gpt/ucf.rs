@@ -10,16 +10,36 @@
 #![warn(missing_docs)]
 
 mod contract;
+mod fill;
 mod host;
 
 pub use contract::{
     error_code_to_i32, reference_graph, run_diag_mask, run_matmul_contract, EXPECTED_DIAG_MASK,
     EXPECTED_MATMUL,
 };
+pub use fill::{run_color_fill_rgba8, write_color_fill_rgba8};
 pub use host::bind_external_buffer_via_host;
 
 /// Wasm 目标三元组（与 Rust target 对齐）。
 pub const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
+
+/// L0：UCF CPU Fill → RGBA8 写入线性内存（`width * height * 4` 字节）。
+///
+/// # Safety
+///
+/// `out` 必须可写且长度足够。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucf_color_fill_rgba8(
+    width: u32,
+    height: u32,
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+    out: *mut u8,
+) -> i32 {
+    write_color_fill_rgba8(width, height, [r, g, b, a], out)
+}
 
 /// 经宿主 `ucf_host` import 绑定外部 buffer 句柄（Web GPU 表项）。
 #[unsafe(no_mangle)]

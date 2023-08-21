@@ -141,3 +141,26 @@ fn wasm_bind_external_buffer_forwards_to_host_import() {
         .expect("ucf_bind_external_buffer");
     assert_eq!(bind.call(&mut store, (4, 9)).expect("bind"), 0);
 }
+
+#[test]
+fn wasm_color_fill_rgba8_writes_linear_memory() {
+    let path = wasm_artifact();
+    ensure_wasm_built(&path);
+    let (mut store, instance) = load_instance(&path);
+    let fill: TypedFunc<(i32, i32, i32, i32, i32, i32, i32), i32> = instance
+        .get_typed_func(&mut store, "ucf_color_fill_rgba8")
+        .expect("ucf_color_fill_rgba8");
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .expect("export memory");
+    let out_ptr: i32 = 1024;
+    let status = fill
+        .call(&mut store, (2, 2, 9, 8, 7, 255, out_ptr))
+        .expect("fill");
+    assert_eq!(status, 0);
+    let mut px = [0u8; 4];
+    memory
+        .read(&store, out_ptr as usize, &mut px)
+        .expect("read pixel");
+    assert_eq!(px, [9, 8, 7, 255]);
+}

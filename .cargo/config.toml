@@ -1,0 +1,3 @@
+# wasm 默认堆：L0 RGBA8 readback 与 reference 图需要可增长线性内存。
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--initial-memory=2097152"]
