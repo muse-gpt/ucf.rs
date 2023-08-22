@@ -25,6 +25,24 @@ registry.register(9, { kind: "buffer", label: "demo" });
 await loadUcf({ registry });
 ```
 
-宿主通过 wasm import `ucf_host.ucf_host_bind_external_buffer` 维护 GPU 句柄表（L2 `browser-gpu` 后置接线）。
+宿主通过 wasm import `ucf_host.ucf_host_bind_external_buffer` 维护 GPU 句柄表。
+
+L0 降级（CPU readback → canvas 2D）：
+
+```js
+import { presentColorFillL0 } from "@ucf/unknown-wasm32";
+
+const canvas = document.querySelector("canvas");
+await presentColorFillL0(canvas, [32, 64, 128, 255]);
+```
+
+L2（UCF CPU Fill + 宿主 WebGPU 清屏，无 Rust `wgpu` crate）：
+
+```js
+import { presentColorFillL2 } from "@ucf/unknown-wasm32";
+
+const canvas = document.querySelector("canvas");
+await presentColorFillL2(canvas, [0, 0, 255, 255]);
+```
 
 设计见工作区 `规划设计/ucf/44-ucf-web-platform.md`。

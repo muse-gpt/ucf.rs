@@ -12,6 +12,7 @@
 mod contract;
 mod fill;
 mod host;
+mod l2;
 
 pub use contract::{
     error_code_to_i32, reference_graph, run_diag_mask, run_matmul_contract, EXPECTED_DIAG_MASK,
@@ -19,6 +20,7 @@ pub use contract::{
 };
 pub use fill::{run_color_fill_rgba8, write_color_fill_rgba8};
 pub use host::bind_external_buffer_via_host;
+pub use l2::{l2_color_fill_webgpu_status, run_l2_color_fill_webgpu};
 
 /// Wasm 目标三元组（与 Rust target 对齐）。
 pub const TARGET_TRIPLE: &str = "wasm32-unknown-unknown";
@@ -39,6 +41,19 @@ pub unsafe extern "C" fn ucf_color_fill_rgba8(
     out: *mut u8,
 ) -> i32 {
     write_color_fill_rgba8(width, height, [r, g, b, a], out)
+}
+
+/// L2：UCF CPU `Fill` 校验后，经 `ucf_host` 提交 WebGPU 清屏。
+#[unsafe(no_mangle)]
+pub extern "C" fn ucf_l2_color_fill_webgpu(
+    width: u32,
+    height: u32,
+    r: u8,
+    g: u8,
+    b: u8,
+    a: u8,
+) -> i32 {
+    l2_color_fill_webgpu_status(width, height, [r, g, b, a])
 }
 
 /// 经宿主 `ucf_host` import 绑定外部 buffer 句柄（Web GPU 表项）。

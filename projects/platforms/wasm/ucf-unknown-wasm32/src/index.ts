@@ -2,6 +2,11 @@
  * UCF Wasm 平台袋：`ucf-wasm` cdylib + 宿主句柄表。
  */
 
+import { hostL2ColorFillWebGpu, initWebGpuHost } from "./webgpu.js";
+
+export { getWebGpuHostState, hostL2ColorFillWebGpu, initWebGpuHost } from "./webgpu.js";
+export type { WebGpuHostState } from "./webgpu.js";
+
 export const rustTarget = "wasm32-unknown-unknown" as const;
 export const platformPackage = "ucf-unknown-wasm32" as const;
 
@@ -59,6 +64,11 @@ export interface UcfWasmBindings {
         rgba: [number, number, number, number],
         outPtr: number,
     ): number;
+    l2ColorFillWebgpu(
+        width: number,
+        height: number,
+        rgba: [number, number, number, number],
+    ): number;
     memory: WebAssembly.Memory | undefined;
 }
 
@@ -86,6 +96,14 @@ type WasmExports = {
         a: number,
         outPtr: number,
     ) => number;
+    ucf_l2_color_fill_webgpu: (
+        width: number,
+        height: number,
+        r: number,
+        g: number,
+        b: number,
+        a: number,
+    ) => number;
 };
 
 function decodeVersion(code: number): string {
@@ -109,6 +127,14 @@ function buildImports(registry: UcfHostHandleRegistry): WebAssembly.Imports {
         ucf_host: {
             ucf_host_bind_external_buffer: (resourceId: number, handleId: number): number =>
                 registry.bindResource(resourceId, handleId),
+            ucf_host_l2_color_fill_webgpu: (
+                width: number,
+                height: number,
+                r: number,
+                g: number,
+                b: number,
+                a: number,
+            ): number => hostL2ColorFillWebGpu(width, height, r, g, b, a),
         },
     };
 }
@@ -192,6 +218,19 @@ export async function loadUcf(options: LoadUcfOptions = {}): Promise<UcfWasmBind
                 rgba[3],
                 outPtr,
             ),
+        l2ColorFillWebgpu: (width, height, rgba) => {
+            if (!exports.ucf_l2_color_fill_webgpu) {
+                throw new Error("ucf_l2_color_fill_webgpu missing: rebuild wasm");
+            }
+            return exports.ucf_l2_color_fill_webgpu(
+                width,
+                height,
+                rgba[0],
+                rgba[1],
+                rgba[2],
+                rgba[3],
+            );
+        },
     };
 }
 
@@ -235,4 +274,30 @@ export async function presentColorFillL0(
     return ucf;
 }
 
-export default { loadUcf, UcfHostHandleRegistry, presentRgba8ToCanvas2d, presentColorFillL0, rustTarget, platformPackage };
+/**
+ * L2：UCF CPU Fill 校验 + 宿主 WebGPU 清屏（须先 `initWebGpuHost`）。
+ */
+export async function presentColorFillL2(
+    canvas: HTMLCanvasElement,
+    rgba: [number, number, number, number],
+    options: LoadUcfOptions = {},
+): Promise<UcfWasmBindings> {
+    await initWebGpuHost(canvas);
+    const ucf = await loadUcf(options);
+    const status = ucf.l2ColorFillWebgpu(canvas.width, canvas.height, rgba);
+    if (status !== 0) {
+        throw new Error(`ucf_l2_color_fill_webgpu failed: ${status}`);
+    }
+    return ucf;
+}
+
+export default {
+    loadUcf,
+    UcfHostHandleRegistry,
+    presentRgba8ToCanvas2d,
+    presentColorFillL0,
+    presentColorFillL2,
+    initWebGpuHost,
+    rustTarget,
+    platformPackage,
+};
