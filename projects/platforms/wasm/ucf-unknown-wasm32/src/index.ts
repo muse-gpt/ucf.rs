@@ -3,9 +3,15 @@
  */
 
 import { hostL2ColorFillWebGpu, initWebGpuHost } from "./webgpu.js";
+import { hostL1ColorFillWebGl2, initWebGl2Host } from "./webgl2.js";
 
 export { getWebGpuHostState, hostL2ColorFillWebGpu, initWebGpuHost } from "./webgpu.js";
 export type { WebGpuHostState } from "./webgpu.js";
+export { getWebGl2HostState, hostL1ColorFillWebGl2, initWebGl2Host } from "./webgl2.js";
+export type { WebGl2HostState } from "./webgl2.js";
+
+/** 自动降级链实际使用的呈现档位。 */
+export type UcfPresentTier = "L2" | "L1" | "L0";
 
 export const rustTarget = "wasm32-unknown-unknown" as const;
 export const platformPackage = "ucf-unknown-wasm32" as const;
@@ -291,13 +297,107 @@ export async function presentColorFillL2(
     return ucf;
 }
 
+/**
+ * L1：UCF CPU Fill 探针 + 宿主 WebGL2 清屏。
+ */
+export async function presentColorFillL1(
+    canvas: HTMLCanvasElement,
+    rgba: [number, number, number, number],
+    options: LoadUcfOptions = {},
+): Promise<UcfWasmBindings> {
+    initWebGl2Host(canvas);
+    const ucf = await loadUcf(options);
+    const probe = ucf.colorFillRgba8(1, 1, rgba, 4096);
+    if (probe !== 0) {
+        throw new Error(`ucf_color_fill_rgba8 probe failed: ${probe}`);
+    }
+    const code = hostL1ColorFillWebGl2(rgba[0], rgba[1], rgba[2], rgba[3]);
+    if (code !== 0) {
+        throw new Error(`hostL1ColorFillWebGl2 failed: ${code}`);
+    }
+    return ucf;
+}
+
+export interface PresentColorFillAutoResult {
+    ucf: UcfWasmBindings;
+    tier: UcfPresentTier;
+}
+
+function probeWebGl2(): boolean {
+    if (typeof document === "undefined") {
+        return false;
+    }
+    const probe = document.createElement("canvas");
+    return !!probe.getContext("webgl2");
+}
+
+/**
+ * L0 经离屏 canvas 再 `drawImage` 到目标（目标已绑定 WebGPU 时降级用）。
+ */
+export async function presentColorFillL0Blit(
+    target: HTMLCanvasElement,
+    rgba: [number, number, number, number],
+    options: LoadUcfOptions = {},
+): Promise<UcfWasmBindings> {
+    const scratch = document.createElement("canvas");
+    scratch.width = target.width;
+    scratch.height = target.height;
+    const ucf = await presentColorFillL0(scratch, rgba, options);
+    const ctx = target.getContext("2d");
+    if (!ctx) {
+        throw new Error("target canvas 2d context unavailable for L0 blit");
+    }
+    ctx.drawImage(scratch, 0, 0);
+    return ucf;
+}
+
+/**
+ * L2 → L1 → L0 自动降级清屏。
+ */
+export async function presentColorFillAuto(
+    canvas: HTMLCanvasElement,
+    rgba: [number, number, number, number],
+    options: LoadUcfOptions = {},
+): Promise<PresentColorFillAutoResult> {
+    const webGpu = typeof navigator !== "undefined" && !!navigator.gpu;
+    const webGl2 = probeWebGl2();
+
+    if (webGpu) {
+        try {
+            const ucf = await presentColorFillL2(canvas, rgba, options);
+            return { ucf, tier: "L2" };
+        } catch {
+            // canvas 可能已绑定 WebGPU，不再尝试 L1
+        }
+    } else if (webGl2) {
+        try {
+            const ucf = await presentColorFillL1(canvas, rgba, options);
+            return { ucf, tier: "L1" };
+        } catch {
+            // fall through
+        }
+    }
+
+    try {
+        const ucf = await presentColorFillL0(canvas, rgba, options);
+        return { ucf, tier: "L0" };
+    } catch {
+        const ucf = await presentColorFillL0Blit(canvas, rgba, options);
+        return { ucf, tier: "L0" };
+    }
+}
+
 export default {
     loadUcf,
     UcfHostHandleRegistry,
     presentRgba8ToCanvas2d,
     presentColorFillL0,
+    presentColorFillL1,
     presentColorFillL2,
+    presentColorFillL0Blit,
+    presentColorFillAuto,
     initWebGpuHost,
+    initWebGl2Host,
     rustTarget,
     platformPackage,
 };

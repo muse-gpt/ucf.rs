@@ -45,4 +45,13 @@ const canvas = document.querySelector("canvas");
 await presentColorFillL2(canvas, [0, 0, 255, 255]);
 ```
 
+L1 / 自动降级（WebGL2 → L0）：
+
+```js
+import { presentColorFillL1, presentColorFillAuto } from "@ucf/unknown-wasm32";
+
+const { ucf, tier } = await presentColorFillAuto(canvas, [0, 128, 0, 255]);
+console.log(tier); // "L2" | "L1" | "L0"
+```
+
 设计见工作区 `规划设计/ucf/44-ucf-web-platform.md`。
