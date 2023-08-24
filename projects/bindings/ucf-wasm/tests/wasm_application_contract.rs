@@ -52,6 +52,13 @@ fn load_instance(path: &Path) -> (Store<()>, Instance) {
             |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 },
         )
         .expect("define ucf_host_l2_color_fill_webgpu");
+    linker
+        .func_wrap(
+            "ucf_host",
+            "ucf_host_l2_raster_clear_webgpu",
+            |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 },
+        )
+        .expect("define ucf_host_l2_raster_clear_webgpu");
     let instance = linker
         .instantiate(&mut store, &module)
         .expect("instantiate ucf_wasm");
@@ -182,4 +189,39 @@ fn wasm_l2_color_fill_webgpu_runs_cpu_then_host() {
         .expect("ucf_l2_color_fill_webgpu");
     let status = l2.call(&mut store, (4, 4, 10, 20, 30, 255)).expect("l2 fill");
     assert_eq!(status, 0);
+}
+
+#[test]
+fn wasm_l2_raster_clear_webgpu_runs_cpu_then_host() {
+    let path = wasm_artifact();
+    ensure_wasm_built(&path);
+    let (mut store, instance) = load_instance(&path);
+    let l2: TypedFunc<(i32, i32, i32, i32, i32, i32), i32> = instance
+        .get_typed_func(&mut store, "ucf_l2_raster_clear_webgpu")
+        .expect("ucf_l2_raster_clear_webgpu");
+    let status = l2.call(&mut store, (4, 2, 255, 0, 0, 255)).expect("l2 raster");
+    assert_eq!(status, 0);
+}
+
+#[test]
+fn wasm_raster_clear_rgba8_writes_linear_memory() {
+    let path = wasm_artifact();
+    ensure_wasm_built(&path);
+    let (mut store, instance) = load_instance(&path);
+    let raster: TypedFunc<(i32, i32, i32, i32, i32, i32, i32), i32> = instance
+        .get_typed_func(&mut store, "ucf_raster_clear_rgba8")
+        .expect("ucf_raster_clear_rgba8");
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .expect("export memory");
+    let out_ptr: i32 = 2048;
+    let status = raster
+        .call(&mut store, (4, 2, 255, 0, 0, 255, out_ptr))
+        .expect("raster readback");
+    assert_eq!(status, 0);
+    let mut px = [0u8; 4];
+    memory
+        .read(&store, out_ptr as usize, &mut px)
+        .expect("read pixel");
+    assert_eq!(px, [255, 0, 0, 255]);
 }

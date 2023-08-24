@@ -80,3 +80,15 @@ export function hostL2ColorFillWebGpu(
         return -31;
     }
 }
+
+/** wasm import `ucf_host_l2_raster_clear_webgpu`（与 Fill 同色清屏，Raster 语义）。 */
+export function hostL2RasterClearWebGpu(
+    width: number,
+    height: number,
+    r: number,
+    g: number,
+    b: number,
+    a: number,
+): number {
+    return hostL2ColorFillWebGpu(width, height, r, g, b, a);
+}

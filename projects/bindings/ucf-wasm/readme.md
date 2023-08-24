@@ -22,6 +22,8 @@ cargo build -p ucf-wasm --target wasm32-unknown-unknown --release
 | `ucf_application_contract_diag_mask` | 诊断事件 kind 位掩码（与 `event_kinds` 子集对齐） |
 | `ucf_color_fill_rgba8` | L0：UCF CPU `Fill` → RGBA8 写入线性内存 |
 | `ucf_l2_color_fill_webgpu` | L2：CPU `Fill` 校验后，经 `ucf_host` 提交 WebGPU 清屏 |
+| `ucf_l2_raster_clear_webgpu` | L2：CPU `Raster` 清屏校验后，经 `ucf_host` 提交 WebGPU 清屏 |
+| `ucf_raster_clear_rgba8` | L0：CPU `Raster` 清屏读回 RGBA8 |
 
 ## 验收
 

@@ -2,10 +2,10 @@
  * UCF Wasm 平台袋：`ucf-wasm` cdylib + 宿主句柄表。
  */
 
-import { hostL2ColorFillWebGpu, initWebGpuHost } from "./webgpu.js";
+import { hostL2ColorFillWebGpu, hostL2RasterClearWebGpu, initWebGpuHost } from "./webgpu.js";
 import { hostL1ColorFillWebGl2, initWebGl2Host } from "./webgl2.js";
 
-export { getWebGpuHostState, hostL2ColorFillWebGpu, initWebGpuHost } from "./webgpu.js";
+export { getWebGpuHostState, hostL2ColorFillWebGpu, hostL2RasterClearWebGpu, initWebGpuHost } from "./webgpu.js";
 export type { WebGpuHostState } from "./webgpu.js";
 export { getWebGl2HostState, hostL1ColorFillWebGl2, initWebGl2Host } from "./webgl2.js";
 export type { WebGl2HostState } from "./webgl2.js";
@@ -75,6 +75,17 @@ export interface UcfWasmBindings {
         height: number,
         rgba: [number, number, number, number],
     ): number;
+    l2RasterClearWebgpu(
+        width: number,
+        height: number,
+        rgba: [number, number, number, number],
+    ): number;
+    rasterClearRgba8(
+        width: number,
+        height: number,
+        rgba: [number, number, number, number],
+        outPtr: number,
+    ): number;
     memory: WebAssembly.Memory | undefined;
 }
 
@@ -110,6 +121,23 @@ type WasmExports = {
         b: number,
         a: number,
     ) => number;
+    ucf_l2_raster_clear_webgpu: (
+        width: number,
+        height: number,
+        r: number,
+        g: number,
+        b: number,
+        a: number,
+    ) => number;
+    ucf_raster_clear_rgba8: (
+        width: number,
+        height: number,
+        r: number,
+        g: number,
+        b: number,
+        a: number,
+        outPtr: number,
+    ) => number;
 };
 
 function decodeVersion(code: number): string {
@@ -141,6 +169,14 @@ function buildImports(registry: UcfHostHandleRegistry): WebAssembly.Imports {
                 b: number,
                 a: number,
             ): number => hostL2ColorFillWebGpu(width, height, r, g, b, a),
+            ucf_host_l2_raster_clear_webgpu: (
+                width: number,
+                height: number,
+                r: number,
+                g: number,
+                b: number,
+                a: number,
+            ): number => hostL2RasterClearWebGpu(width, height, r, g, b, a),
         },
     };
 }
@@ -237,6 +273,29 @@ export async function loadUcf(options: LoadUcfOptions = {}): Promise<UcfWasmBind
                 rgba[3],
             );
         },
+        l2RasterClearWebgpu: (width, height, rgba) => {
+            if (!exports.ucf_l2_raster_clear_webgpu) {
+                throw new Error("ucf_l2_raster_clear_webgpu missing: rebuild wasm");
+            }
+            return exports.ucf_l2_raster_clear_webgpu(
+                width,
+                height,
+                rgba[0],
+                rgba[1],
+                rgba[2],
+                rgba[3],
+            );
+        },
+        rasterClearRgba8: (width, height, rgba, outPtr) =>
+            exports.ucf_raster_clear_rgba8(
+                width,
+                height,
+                rgba[0],
+                rgba[1],
+                rgba[2],
+                rgba[3],
+                outPtr,
+            ),
     };
 }
 
@@ -387,6 +446,94 @@ export async function presentColorFillAuto(
     }
 }
 
+/**
+ * L2：UCF CPU `Raster` 清屏校验 + 宿主 WebGPU 清屏。
+ */
+export async function presentRasterClearL2(
+    canvas: HTMLCanvasElement,
+    rgba: [number, number, number, number],
+    options: LoadUcfOptions = {},
+): Promise<UcfWasmBindings> {
+    await initWebGpuHost(canvas);
+    const ucf = await loadUcf(options);
+    const status = ucf.l2RasterClearWebgpu(canvas.width, canvas.height, rgba);
+    if (status !== 0) {
+        throw new Error(`ucf_l2_raster_clear_webgpu failed: ${status}`);
+    }
+    return ucf;
+}
+
+/**
+ * L0：`Raster` CPU 读回 + canvas 2D。
+ */
+export async function presentRasterClearL0(
+    canvas: HTMLCanvasElement,
+    rgba: [number, number, number, number],
+    options: LoadUcfOptions = {},
+): Promise<UcfWasmBindings> {
+    const ucf = await loadUcf(options);
+    const width = canvas.width;
+    const height = canvas.height;
+    const outPtr = 8192;
+    const status = ucf.rasterClearRgba8(width, height, rgba, outPtr);
+    if (status !== 0) {
+        throw new Error(`ucf_raster_clear_rgba8 failed: ${status}`);
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+        throw new Error("canvas 2d context unavailable");
+    }
+    presentRgba8ToCanvas2d(ctx, ucf.memory!, outPtr, width, height);
+    return ucf;
+}
+
+export interface PresentRasterClearAutoResult {
+    ucf: UcfWasmBindings;
+    tier: UcfPresentTier;
+}
+
+export async function presentRasterClearAuto(
+    canvas: HTMLCanvasElement,
+    rgba: [number, number, number, number],
+    options: LoadUcfOptions = {},
+): Promise<PresentRasterClearAutoResult> {
+    const webGpu = typeof navigator !== "undefined" && !!navigator.gpu;
+    const webGl2 = probeWebGl2();
+
+    if (webGpu) {
+        try {
+            const ucf = await presentRasterClearL2(canvas, rgba, options);
+            return { ucf, tier: "L2" };
+        } catch {
+            // fall through
+        }
+    } else if (webGl2) {
+        try {
+            initWebGl2Host(canvas);
+            const ucf = await loadUcf(options);
+            const probe = ucf.rasterClearRgba8(1, 1, rgba, 4096);
+            if (probe !== 0) {
+                throw new Error(`raster probe failed: ${probe}`);
+            }
+            const code = hostL1ColorFillWebGl2(rgba[0], rgba[1], rgba[2], rgba[3]);
+            if (code !== 0) {
+                throw new Error(`hostL1ColorFillWebGl2 failed: ${code}`);
+            }
+            return { ucf, tier: "L1" };
+        } catch {
+            // fall through
+        }
+    }
+
+    try {
+        const ucf = await presentRasterClearL0(canvas, rgba, options);
+        return { ucf, tier: "L0" };
+    } catch {
+        const ucf = await presentColorFillL0Blit(canvas, rgba, options);
+        return { ucf, tier: "L0" };
+    }
+}
+
 export default {
     loadUcf,
     UcfHostHandleRegistry,
@@ -396,6 +543,9 @@ export default {
     presentColorFillL2,
     presentColorFillL0Blit,
     presentColorFillAuto,
+    presentRasterClearL0,
+    presentRasterClearL2,
+    presentRasterClearAuto,
     initWebGpuHost,
     initWebGl2Host,
     rustTarget,
