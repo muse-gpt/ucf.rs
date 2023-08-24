@@ -10,7 +10,7 @@ use ucf_scheduler::{
 use ucf_types::ResourceId;
 
 use crate::external::HostExternalBuffer;
-use crate::params::{f32_param, resource_param, u32_param, BackendError};
+use crate::params::{f32_param, optional_f64_param, resource_param, u32_param, BackendError};
 use crate::store::{shared_store, HostStore, SharedHostStore};
 
 /// Host CPU reference backend with readable buffer store.
@@ -151,6 +151,7 @@ impl Backend for CpuBackend {
             TaskKind::Copy => self.run_copy(task).map_err(Self::map_err),
             TaskKind::Fill => self.run_fill(task).map_err(Self::map_err),
             TaskKind::MatMul => self.run_matmul(task).map_err(Self::map_err),
+            TaskKind::Raster => self.run_raster(task).map_err(Self::map_err),
             other => Err(Self::map_err(BackendError(format!(
                 "cpu backend does not implement {other:?}"
             )))),
@@ -244,6 +245,65 @@ impl CpuBackend {
             .lock()
             .map_err(|_| BackendError("cpu store lock poisoned".into()))?;
         store.write_f32(out_id, &out)
+    }
+
+    /// Raster 清屏参考：`draw=clear` 写紧凑 RGBA8 到 `dst`（与 DX12 读回布局对齐）。
+    fn run_raster(&mut self, task: &TaskNode) -> std::result::Result<(), BackendError> {
+        use ucf_ir::ParamValue;
+
+        let draw = match task.params.get("draw") {
+            Some(ParamValue::Str(s)) => s.as_str(),
+            None => "clear",
+            Some(other) => {
+                return Err(BackendError(format!(
+                    "task {} param `draw` must be string, got {other:?}",
+                    task.id.0
+                )));
+            }
+        };
+        if draw != "clear" {
+            return Err(BackendError(format!(
+                "cpu raster only implements draw=clear, got `{draw}`"
+            )));
+        }
+
+        let dst = resource_param(task, "dst")?;
+        let width = u32_param(task, "width")? as usize;
+        let height = u32_param(task, "height")? as usize;
+        if width == 0 || height == 0 {
+            return Err(BackendError("raster width/height must be > 0".into()));
+        }
+        let r = optional_f64_param(task, "r", 0.0);
+        let g = optional_f64_param(task, "g", 0.0);
+        let b = optional_f64_param(task, "b", 0.0);
+        let a = optional_f64_param(task, "a", 1.0);
+        let rgba = [
+            (r.clamp(0.0, 1.0) * 255.0).round() as u8,
+            (g.clamp(0.0, 1.0) * 255.0).round() as u8,
+            (b.clamp(0.0, 1.0) * 255.0).round() as u8,
+            (a.clamp(0.0, 1.0) * 255.0).round() as u8,
+        ];
+        let need = width
+            .checked_mul(height)
+            .and_then(|p| p.checked_mul(4))
+            .ok_or_else(|| BackendError("raster pixel count overflow".into()))?;
+
+        let mut store = self
+            .store
+            .lock()
+            .map_err(|_| BackendError("cpu store lock poisoned".into()))?;
+        let bytes = store.bytes_mut(dst)?;
+        if bytes.len() < need {
+            return Err(BackendError(format!(
+                "resource {} has {} bytes, raster needs {need}",
+                dst.0,
+                bytes.len()
+            )));
+        }
+        for px in bytes[..need].chunks_exact_mut(4) {
+            px.copy_from_slice(&rgba);
+        }
+        Ok(())
     }
 }
 

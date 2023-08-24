@@ -40,9 +40,13 @@ pub fn u32_param(task: &TaskNode, key: &str) -> Result<u32, BackendError> {
 }
 
 pub fn f32_param(task: &TaskNode, key: &str) -> Result<f32, BackendError> {
+    f64_param(task, key).map(|v| v as f32)
+}
+
+pub fn f64_param(task: &TaskNode, key: &str) -> Result<f64, BackendError> {
     match task.params.get(key) {
-        Some(ParamValue::F64(v)) => Ok(*v as f32),
-        Some(ParamValue::I64(v)) => Ok(*v as f32),
+        Some(ParamValue::F64(v)) => Ok(*v),
+        Some(ParamValue::I64(v)) => Ok(*v as f64),
         Some(other) => Err(BackendError(format!(
             "task {} param `{key}` must be numeric, got {other:?}",
             task.id.0
@@ -51,5 +55,13 @@ pub fn f32_param(task: &TaskNode, key: &str) -> Result<f32, BackendError> {
             "task {} missing param `{key}`",
             task.id.0
         ))),
+    }
+}
+
+pub fn optional_f64_param(task: &TaskNode, key: &str, default: f64) -> f64 {
+    match task.params.get(key) {
+        Some(ParamValue::F64(v)) => *v,
+        Some(ParamValue::I64(v)) => *v as f64,
+        _ => default,
     }
 }
