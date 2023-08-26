@@ -11,6 +11,7 @@ use ucf_types::ResourceId;
 
 use crate::external::HostExternalBuffer;
 use crate::params::{f32_param, optional_f64_param, resource_param, u32_param, BackendError};
+use crate::raster_tri;
 use crate::store::{shared_store, HostStore, SharedHostStore};
 
 /// Host CPU reference backend with readable buffer store.
@@ -261,9 +262,9 @@ impl CpuBackend {
                 )));
             }
         };
-        if draw != "clear" {
+        if draw != "clear" && draw != "tri" {
             return Err(BackendError(format!(
-                "cpu raster only implements draw=clear, got `{draw}`"
+                "cpu raster draw must be `clear` or `tri`, got `{draw}`"
             )));
         }
 
@@ -277,16 +278,27 @@ impl CpuBackend {
         let g = optional_f64_param(task, "g", 0.0);
         let b = optional_f64_param(task, "b", 0.0);
         let a = optional_f64_param(task, "a", 1.0);
-        let rgba = [
+        let clear = [
             (r.clamp(0.0, 1.0) * 255.0).round() as u8,
             (g.clamp(0.0, 1.0) * 255.0).round() as u8,
             (b.clamp(0.0, 1.0) * 255.0).round() as u8,
             (a.clamp(0.0, 1.0) * 255.0).round() as u8,
         ];
-        let need = width
-            .checked_mul(height)
-            .and_then(|p| p.checked_mul(4))
-            .ok_or_else(|| BackendError("raster pixel count overflow".into()))?;
+        let pixels = if draw == "tri" {
+            raster_tri::raster_clear_tri_rgba8(width, height, clear, raster_tri::TRI_RGBA)
+                .map_err(|msg| BackendError(msg.into()))?
+        } else {
+            let need = width
+                .checked_mul(height)
+                .and_then(|p| p.checked_mul(4))
+                .ok_or_else(|| BackendError("raster pixel count overflow".into()))?;
+            let mut solid = Vec::with_capacity(need);
+            for _ in 0..(width * height) {
+                solid.extend_from_slice(&clear);
+            }
+            solid
+        };
+        let need = pixels.len();
 
         let mut store = self
             .store
@@ -300,9 +312,7 @@ impl CpuBackend {
                 bytes.len()
             )));
         }
-        for px in bytes[..need].chunks_exact_mut(4) {
-            px.copy_from_slice(&rgba);
-        }
+        bytes[..need].copy_from_slice(&pixels);
         Ok(())
     }
 }
