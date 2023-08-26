@@ -225,3 +225,25 @@ fn wasm_raster_clear_rgba8_writes_linear_memory() {
         .expect("read pixel");
     assert_eq!(px, [255, 0, 0, 255]);
 }
+
+#[test]
+fn wasm_raster_tri_rgba8_writes_center_yellow() {
+    let path = wasm_artifact();
+    ensure_wasm_built(&path);
+    let (mut store, instance) = load_instance(&path);
+    let tri: TypedFunc<(i32, i32, i32), i32> = instance
+        .get_typed_func(&mut store, "ucf_raster_tri_rgba8")
+        .expect("ucf_raster_tri_rgba8");
+    let memory = instance
+        .get_memory(&mut store, "memory")
+        .expect("export memory");
+    let out_ptr: i32 = 4096;
+    let status = tri.call(&mut store, (32, 32, out_ptr)).expect("tri raster");
+    assert_eq!(status, 0);
+    let w = 32usize;
+    let mut center = [0u8; 4];
+    memory
+        .read(&store, out_ptr as usize + (16 * w + 16) * 4, &mut center)
+        .expect("read center");
+    assert_eq!(center, [255, 255, 0, 255]);
+}

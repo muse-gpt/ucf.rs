@@ -11,7 +11,28 @@ use crate::host::l2_raster_clear_webgpu_via_host;
 
 /// 与 DX12 `raster_clear` 同参的 Raster 清屏图。
 pub fn raster_clear_graph(width: u32, height: u32, rgba: [f32; 4]) -> Graph {
+    raster_graph(width, height, rgba, None)
+}
+
+/// `draw=tri` 黄三角（黑底清屏参数由 `rgba` 给出）。
+pub fn raster_tri_graph(width: u32, height: u32, clear_rgba: [f32; 4]) -> Graph {
+    raster_graph(width, height, clear_rgba, Some("tri"))
+}
+
+fn raster_graph(width: u32, height: u32, rgba: [f32; 4], draw: Option<&str>) -> Graph {
     let bytes = (width as u64) * (height as u64) * 4;
+    let mut params = BTreeMap::from([
+        ("dst".into(), ParamValue::I64(1)),
+        ("width".into(), ParamValue::I64(i64::from(width))),
+        ("height".into(), ParamValue::I64(i64::from(height))),
+        ("r".into(), ParamValue::F64(f64::from(rgba[0]))),
+        ("g".into(), ParamValue::F64(f64::from(rgba[1]))),
+        ("b".into(), ParamValue::F64(f64::from(rgba[2]))),
+        ("a".into(), ParamValue::F64(f64::from(rgba[3]))),
+    ]);
+    if let Some(mode) = draw {
+        params.insert("draw".into(), ParamValue::Str(mode.into()));
+    }
     Graph {
         resources: ResourceGraph {
             nodes: vec![ResourceNode {
@@ -27,15 +48,7 @@ pub fn raster_clear_graph(width: u32, height: u32, rgba: [f32; 4]) -> Graph {
                 id: TaskId(10),
                 kind: TaskKind::Raster,
                 shader: ShaderId(10),
-                params: BTreeMap::from([
-                    ("dst".into(), ParamValue::I64(1)),
-                    ("width".into(), ParamValue::I64(i64::from(width))),
-                    ("height".into(), ParamValue::I64(i64::from(height))),
-                    ("r".into(), ParamValue::F64(f64::from(rgba[0]))),
-                    ("g".into(), ParamValue::F64(f64::from(rgba[1]))),
-                    ("b".into(), ParamValue::F64(f64::from(rgba[2]))),
-                    ("a".into(), ParamValue::F64(f64::from(rgba[3]))),
-                ]),
+                params,
                 dispatch: Default::default(),
                 objective: Objective::MaxThroughput,
                 priority: Priority::Batch,
@@ -48,6 +61,27 @@ pub fn raster_clear_graph(width: u32, height: u32, rgba: [f32; 4]) -> Graph {
             }],
         },
     }
+}
+
+fn run_raster_graph(graph: &Graph, width: u32, height: u32) -> Result<Vec<u8>, ErrorCode> {
+    if width == 0 || height == 0 {
+        return Ok(Vec::new());
+    }
+    let mut session = CpuSession::open();
+    session.prepare(graph).map_err(|e| e.code())?;
+    session.run_prepared(graph).map_err(|e| e.code())?;
+    session.flush().map_err(|e| e.code())?;
+    let need = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or(ErrorCode::Backend)?;
+    let store = session.store();
+    let guard = store.lock().map_err(|_| ErrorCode::Backend)?;
+    let bytes = guard.bytes(ResourceId(1)).map_err(|_| ErrorCode::Backend)?;
+    if bytes.len() < need {
+        return Err(ErrorCode::Backend);
+    }
+    Ok(bytes[..need].to_vec())
 }
 
 fn rgba_bytes_from_linear(rgba: [f32; 4]) -> [u8; 4] {
@@ -69,21 +103,16 @@ pub fn run_raster_clear_rgba8(
         return Ok(Vec::new());
     }
     let graph = raster_clear_graph(width, height, rgba);
-    let mut session = CpuSession::open();
-    session.prepare(&graph).map_err(|e| e.code())?;
-    session.run_prepared(&graph).map_err(|e| e.code())?;
-    session.flush().map_err(|e| e.code())?;
-    let need = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|p| p.checked_mul(4))
-        .ok_or(ErrorCode::Backend)?;
-    let store = session.store();
-    let guard = store.lock().map_err(|_| ErrorCode::Backend)?;
-    let bytes = guard.bytes(ResourceId(1)).map_err(|_| ErrorCode::Backend)?;
-    if bytes.len() < need {
-        return Err(ErrorCode::Backend);
+    run_raster_graph(&graph, width, height)
+}
+
+/// CPU 跑 `draw=tri` 并读回 RGBA8。
+pub fn run_raster_tri_rgba8(width: u32, height: u32) -> Result<Vec<u8>, ErrorCode> {
+    if width == 0 || height == 0 {
+        return Ok(Vec::new());
     }
-    Ok(bytes[..need].to_vec())
+    let graph = raster_tri_graph(width, height, [0.0, 0.0, 0.0, 1.0]);
+    run_raster_graph(&graph, width, height)
 }
 
 /// L2：CPU Raster 校验后 WebGPU 清屏。
@@ -165,6 +194,32 @@ pub unsafe fn write_raster_clear_rgba8(
     }
 }
 
+/// Write raster tri readback into `out`.
+///
+/// # Safety
+///
+/// `out` must address at least `width * height * 4` bytes.
+pub unsafe fn write_raster_tri_rgba8(width: u32, height: u32, out: *mut u8) -> i32 {
+    if out.is_null() {
+        return -10;
+    }
+    let need = (width as usize)
+        .saturating_mul(height as usize)
+        .saturating_mul(4);
+    match run_raster_tri_rgba8(width, height) {
+        Ok(bytes) => {
+            if bytes.len() != need {
+                return -11;
+            }
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), out, bytes.len());
+            }
+            0
+        }
+        Err(code) => error_code_to_i32(code),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +229,13 @@ mod tests {
         let got = run_raster_clear_rgba8(4, 2, [1.0, 0.0, 0.0, 1.0]).expect("raster");
         assert_eq!(got.len(), 32);
         assert_eq!(&got[0..4], &[255, 0, 0, 255]);
+    }
+
+    #[test]
+    fn raster_tri_32_center_yellow() {
+        let got = run_raster_tri_rgba8(32, 32).expect("tri");
+        let w = 32usize;
+        assert_eq!(&got[((16 * w + 16) * 4)..((16 * w + 16) * 4 + 4)], &[255, 255, 0, 255]);
+        assert_eq!(&got[0..4], &[0, 0, 0, 255]);
     }
 }

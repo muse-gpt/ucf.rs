@@ -24,7 +24,7 @@ pub use host::bind_external_buffer_via_host;
 pub use l2::{l2_color_fill_webgpu_status, run_l2_color_fill_webgpu};
 pub use raster::{
     l2_raster_clear_webgpu_status, run_l2_raster_clear_webgpu, run_raster_clear_rgba8,
-    write_raster_clear_rgba8,
+    run_raster_tri_rgba8, write_raster_clear_rgba8, write_raster_tri_rgba8,
 };
 
 /// Wasm 目标三元组（与 Rust target 对齐）。
@@ -86,6 +86,16 @@ pub unsafe extern "C" fn ucf_raster_clear_rgba8(
     out: *mut u8,
 ) -> i32 {
     write_raster_clear_rgba8(width, height, r, g, b, a, out)
+}
+
+/// CPU `Raster` `draw=tri` 读回 RGBA8 到线性内存。
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ucf_raster_tri_rgba8(
+    width: u32,
+    height: u32,
+    out: *mut u8,
+) -> i32 {
+    write_raster_tri_rgba8(width, height, out)
 }
 
 /// 经宿主 `ucf_host` import 绑定外部 buffer 句柄（Web GPU 表项）。
