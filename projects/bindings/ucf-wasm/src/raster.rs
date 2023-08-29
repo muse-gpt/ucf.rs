@@ -7,7 +7,7 @@ use ucf::ParamValue;
 use ucf::SchedulerErrorCode as ErrorCode;
 
 use crate::contract::error_code_to_i32;
-use crate::host::l2_raster_clear_webgpu_via_host;
+use crate::host::{l2_raster_clear_webgpu_via_host, l2_raster_tri_webgpu_via_host};
 
 /// 与 DX12 `raster_clear` 同参的 Raster 清屏图。
 pub fn raster_clear_graph(width: u32, height: u32, rgba: [f32; 4]) -> Graph {
@@ -149,6 +149,52 @@ pub fn l2_raster_clear_webgpu_status(
         f32::from(a) / 255.0,
     ];
     match run_l2_raster_clear_webgpu(width, height, rgba) {
+        Ok(()) => 0,
+        Err(code) => error_code_to_i32(code),
+    }
+}
+
+fn validate_raster_tri_readback(read: &[u8], width: u32, height: u32) -> Result<(), ErrorCode> {
+    if width == 0 || height == 0 {
+        return Ok(());
+    }
+    let w = width as usize;
+    let need = w
+        .checked_mul(height as usize)
+        .and_then(|p| p.checked_mul(4))
+        .ok_or(ErrorCode::Backend)?;
+    if read.len() < need {
+        return Err(ErrorCode::Backend);
+    }
+    if read[0..4] != [0, 0, 0, 255] {
+        return Err(ErrorCode::Backend);
+    }
+    let cx = w / 2;
+    let cy = height as usize / 2;
+    let center = (cy * w + cx) * 4;
+    if center + 4 > read.len() {
+        return Err(ErrorCode::Backend);
+    }
+    if read[center..center + 4] != [255, 255, 0, 255] {
+        return Err(ErrorCode::Backend);
+    }
+    Ok(())
+}
+
+/// L2：CPU `draw=tri` 校验后 WebGPU 呈现。
+pub fn run_l2_raster_tri_webgpu(width: u32, height: u32) -> Result<(), ErrorCode> {
+    let read = run_raster_tri_rgba8(width, height)?;
+    validate_raster_tri_readback(&read, width, height)?;
+    let code = l2_raster_tri_webgpu_via_host(width, height);
+    if code != 0 {
+        return Err(ErrorCode::Backend);
+    }
+    Ok(())
+}
+
+/// L2 WebGPU `draw=tri` 导出状态码（CPU 校验 + 宿主委托）。
+pub fn l2_raster_tri_webgpu_status(width: u32, height: u32) -> i32 {
+    match run_l2_raster_tri_webgpu(width, height) {
         Ok(()) => 0,
         Err(code) => error_code_to_i32(code),
     }

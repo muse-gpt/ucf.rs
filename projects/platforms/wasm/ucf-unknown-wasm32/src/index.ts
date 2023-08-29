@@ -2,10 +2,10 @@
  * UCF Wasm 平台袋：`ucf-wasm` cdylib + 宿主句柄表。
  */
 
-import { hostL2ColorFillWebGpu, hostL2RasterClearWebGpu, initWebGpuHost } from "./webgpu.js";
+import { hostL2ColorFillWebGpu, hostL2RasterClearWebGpu, hostL2RasterTriWebGpu, initWebGpuHost } from "./webgpu.js";
 import { hostL1ColorFillWebGl2, initWebGl2Host } from "./webgl2.js";
 
-export { getWebGpuHostState, hostL2ColorFillWebGpu, hostL2RasterClearWebGpu, initWebGpuHost } from "./webgpu.js";
+export { getWebGpuHostState, hostL2ColorFillWebGpu, hostL2RasterClearWebGpu, hostL2RasterTriWebGpu, initWebGpuHost } from "./webgpu.js";
 export type { WebGpuHostState } from "./webgpu.js";
 export { getWebGl2HostState, hostL1ColorFillWebGl2, initWebGl2Host } from "./webgl2.js";
 export type { WebGl2HostState } from "./webgl2.js";
@@ -80,12 +80,14 @@ export interface UcfWasmBindings {
         height: number,
         rgba: [number, number, number, number],
     ): number;
+    l2RasterTriWebgpu(width: number, height: number): number;
     rasterClearRgba8(
         width: number,
         height: number,
         rgba: [number, number, number, number],
         outPtr: number,
     ): number;
+    rasterTriRgba8(width: number, height: number, outPtr: number): number;
     memory: WebAssembly.Memory | undefined;
 }
 
@@ -129,6 +131,7 @@ type WasmExports = {
         b: number,
         a: number,
     ) => number;
+    ucf_l2_raster_tri_webgpu: (width: number, height: number) => number;
     ucf_raster_clear_rgba8: (
         width: number,
         height: number,
@@ -138,6 +141,7 @@ type WasmExports = {
         a: number,
         outPtr: number,
     ) => number;
+    ucf_raster_tri_rgba8: (width: number, height: number, outPtr: number) => number;
 };
 
 function decodeVersion(code: number): string {
@@ -177,6 +181,8 @@ function buildImports(registry: UcfHostHandleRegistry): WebAssembly.Imports {
                 b: number,
                 a: number,
             ): number => hostL2RasterClearWebGpu(width, height, r, g, b, a),
+            ucf_host_l2_raster_tri_webgpu: (width: number, height: number): number =>
+                hostL2RasterTriWebGpu(width, height),
         },
     };
 }
@@ -286,6 +292,12 @@ export async function loadUcf(options: LoadUcfOptions = {}): Promise<UcfWasmBind
                 rgba[3],
             );
         },
+        l2RasterTriWebgpu: (width, height) => {
+            if (!exports.ucf_l2_raster_tri_webgpu) {
+                throw new Error("ucf_l2_raster_tri_webgpu missing: rebuild wasm");
+            }
+            return exports.ucf_l2_raster_tri_webgpu(width, height);
+        },
         rasterClearRgba8: (width, height, rgba, outPtr) =>
             exports.ucf_raster_clear_rgba8(
                 width,
@@ -296,6 +308,12 @@ export async function loadUcf(options: LoadUcfOptions = {}): Promise<UcfWasmBind
                 rgba[3],
                 outPtr,
             ),
+        rasterTriRgba8: (width, height, outPtr) => {
+            if (!exports.ucf_raster_tri_rgba8) {
+                throw new Error("ucf_raster_tri_rgba8 missing: rebuild wasm");
+            }
+            return exports.ucf_raster_tri_rgba8(width, height, outPtr);
+        },
     };
 }
 
@@ -487,6 +505,69 @@ export async function presentRasterClearL0(
     return ucf;
 }
 
+/**
+ * L2：UCF CPU `Raster` `draw=tri` 校验 + 宿主 WebGPU 黄三角（须先 `initWebGpuHost`）。
+ */
+export async function presentRasterTriL2(
+    canvas: HTMLCanvasElement,
+    options: LoadUcfOptions = {},
+): Promise<UcfWasmBindings> {
+    await initWebGpuHost(canvas);
+    const ucf = await loadUcf(options);
+    const status = ucf.l2RasterTriWebgpu(canvas.width, canvas.height);
+    if (status !== 0) {
+        throw new Error(`ucf_l2_raster_tri_webgpu failed: ${status}`);
+    }
+    return ucf;
+}
+
+/**
+ * L0：`Raster` `draw=tri` CPU 读回 + canvas 2D。
+ */
+export async function presentRasterTriL0(
+    canvas: HTMLCanvasElement,
+    options: LoadUcfOptions = {},
+): Promise<UcfWasmBindings> {
+    const ucf = await loadUcf(options);
+    const width = canvas.width;
+    const height = canvas.height;
+    const outPtr = 12288;
+    const status = ucf.rasterTriRgba8(width, height, outPtr);
+    if (status !== 0) {
+        throw new Error(`ucf_raster_tri_rgba8 failed: ${status}`);
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+        throw new Error("canvas 2d context unavailable");
+    }
+    presentRgba8ToCanvas2d(ctx, ucf.memory!, outPtr, width, height);
+    return ucf;
+}
+
+export interface PresentRasterTriAutoResult {
+    ucf: UcfWasmBindings;
+    tier: UcfPresentTier;
+}
+
+export async function presentRasterTriAuto(
+    canvas: HTMLCanvasElement,
+    options: LoadUcfOptions = {},
+): Promise<PresentRasterTriAutoResult> {
+    const webGpu = typeof navigator !== "undefined" && !!navigator.gpu;
+
+    if (webGpu) {
+        try {
+            const ucf = await presentRasterTriL2(canvas, options);
+            return { ucf, tier: "L2" };
+        } catch {
+            // fall through
+        }
+    }
+
+    const ucf = await presentRasterTriL0(canvas, options);
+    return { ucf, tier: "L0" };
+}
+
 export interface PresentRasterClearAutoResult {
     ucf: UcfWasmBindings;
     tier: UcfPresentTier;
@@ -546,6 +627,9 @@ export default {
     presentRasterClearL0,
     presentRasterClearL2,
     presentRasterClearAuto,
+    presentRasterTriL0,
+    presentRasterTriL2,
+    presentRasterTriAuto,
     initWebGpuHost,
     initWebGl2Host,
     rustTarget,

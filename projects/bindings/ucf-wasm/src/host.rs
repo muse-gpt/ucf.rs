@@ -27,6 +27,9 @@ extern "C" {
         b: u8,
         a: u8,
     ) -> i32;
+
+    /// L2：宿主侧 WebGPU Raster `draw=tri`（黑底 + NDC 黄三角）。
+    pub fn ucf_host_l2_raster_tri_webgpu(width: u32, height: u32) -> i32;
 }
 
 /// Forward bind request to the JS / TS host registry.
@@ -65,5 +68,18 @@ pub fn l2_raster_clear_webgpu_via_host(width: u32, height: u32, rgba: [u8; 4]) -
     {
         let _ = (width, height, rgba);
         -22
+    }
+}
+
+/// L2 WebGPU Raster `draw=tri` 委托宿主。
+pub fn l2_raster_tri_webgpu_via_host(width: u32, height: u32) -> i32 {
+    #[cfg(target_arch = "wasm32")]
+    unsafe {
+        ucf_host_l2_raster_tri_webgpu(width, height)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = (width, height);
+        -23
     }
 }

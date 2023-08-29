@@ -59,6 +59,13 @@ fn load_instance(path: &Path) -> (Store<()>, Instance) {
             |_: i32, _: i32, _: i32, _: i32, _: i32, _: i32| -> i32 { 0 },
         )
         .expect("define ucf_host_l2_raster_clear_webgpu");
+    linker
+        .func_wrap(
+            "ucf_host",
+            "ucf_host_l2_raster_tri_webgpu",
+            |_: i32, _: i32| -> i32 { 0 },
+        )
+        .expect("define ucf_host_l2_raster_tri_webgpu");
     let instance = linker
         .instantiate(&mut store, &module)
         .expect("instantiate ucf_wasm");
@@ -246,4 +253,16 @@ fn wasm_raster_tri_rgba8_writes_center_yellow() {
         .read(&store, out_ptr as usize + (16 * w + 16) * 4, &mut center)
         .expect("read center");
     assert_eq!(center, [255, 255, 0, 255]);
+}
+
+#[test]
+fn wasm_l2_raster_tri_webgpu_runs_cpu_then_host() {
+    let path = wasm_artifact();
+    ensure_wasm_built(&path);
+    let (mut store, instance) = load_instance(&path);
+    let l2: TypedFunc<(i32, i32), i32> = instance
+        .get_typed_func(&mut store, "ucf_l2_raster_tri_webgpu")
+        .expect("ucf_l2_raster_tri_webgpu");
+    let status = l2.call(&mut store, (32, 32)).expect("l2 raster tri");
+    assert_eq!(status, 0);
 }
