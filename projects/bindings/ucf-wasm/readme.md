@@ -35,6 +35,6 @@ cargo test -p ucf-wasm
 
 原生测试会通过 `wasmtime` 加载已构建的 `.wasm` 并调用上述符号（与 `tests/application_contract.rs` 同语义）。
 
-TypeScript 加载器：`projects/platforms/wasm/ucf-unknown-wasm32`（`@ucf/unknown-wasm32`）。
+TypeScript 加载器不在本仓发布 npm 包；下游产品自行封装（Spark：`@game-gpt/spark-host-web`）。
 
 设计见工作区 `规划设计/ucf/44-ucf-web-platform.md`。
