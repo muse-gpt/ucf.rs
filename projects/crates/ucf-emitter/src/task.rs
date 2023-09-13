@@ -1,33 +1,56 @@
 use ucf_types::{ParamValue, ShaderOp, ShaderProgram, TaskKind, TaskNode};
 
-/// Build a backend-facing [`ShaderProgram`] from a task node.
-///
-/// `Raster` / `RtTrace` keep a placeholder program: clear / present params are
-/// consumed by graphics backends (`dst`, `width`, `height`, optional `r`/`g`/`b`/`a`),
-/// not lowered to a compute kernel here.
-pub fn program_from_task(task: &TaskNode) -> ShaderProgram {
+/// `prepare` 阶段应使用的严格 lowering：未知 `Custom` / `Dispatch` 不得静默退化为 Fill。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProgramLowerError {
+    UnsupportedTaskKind { kind: String },
+    UnsupportedCustomOp { name: String },
+}
+
+/// 严格 lowering；黑洞等领域 `ton_*` 自定义算子在此必须失败。
+pub fn try_program_from_task(task: &TaskNode) -> Result<ShaderProgram, ProgramLowerError> {
     match &task.kind {
-        TaskKind::Copy => ShaderProgram::mem_copy("ucf_copy"),
+        TaskKind::Copy => Ok(ShaderProgram::mem_copy("ucf_copy")),
         TaskKind::Fill => {
             let value = match task.params.get("value") {
                 Some(ParamValue::F64(v)) => *v as f32,
                 Some(ParamValue::I64(v)) => *v as f32,
                 _ => 0.0,
             };
-            ShaderProgram::dispatch_fill("ucf_fill", value)
+            Ok(ShaderProgram::dispatch_fill("ucf_fill", value))
         }
-        TaskKind::MatMul => ShaderProgram::matmul("ucf_matmul"),
+        TaskKind::MatMul => Ok(ShaderProgram::matmul("ucf_matmul")),
         TaskKind::Custom(name) if name == "denoise" => {
-            ShaderProgram::rgba8_denoise("ucf_denoise")
+            Ok(ShaderProgram::rgba8_denoise("ucf_denoise"))
         }
         TaskKind::Custom(name) if name == "attention" => {
-            ShaderProgram::attention("ucf_attention")
+            Ok(ShaderProgram::attention("ucf_attention"))
         }
-        TaskKind::Dispatch | TaskKind::Custom(_) => {
+        TaskKind::Custom(name) => Err(ProgramLowerError::UnsupportedCustomOp {
+            name: name.clone(),
+        }),
+        TaskKind::Dispatch => Err(ProgramLowerError::UnsupportedTaskKind {
+            kind: "Dispatch".into(),
+        }),
+        TaskKind::Raster => Err(ProgramLowerError::UnsupportedTaskKind {
+            kind: "Raster".into(),
+        }),
+        TaskKind::RtTrace => Err(ProgramLowerError::UnsupportedTaskKind {
+            kind: "RtTrace".into(),
+        }),
+    }
+}
+
+/// Build a backend-facing [`ShaderProgram`] from a task node.
+///
+/// 遗留路径：未知 `Custom` 仍映射为占位 Fill（待后端全面改用 `try_program_from_task`）。
+/// `Raster` / `RtTrace` 同理为占位，图形后端消费 present 参数而非此处 kernel。
+pub fn program_from_task(task: &TaskNode) -> ShaderProgram {
+    match try_program_from_task(task) {
+        Ok(p) => p,
+        Err(ProgramLowerError::UnsupportedCustomOp { .. })
+        | Err(ProgramLowerError::UnsupportedTaskKind { kind: _ }) => {
             ShaderProgram::dispatch_fill("ucf_dispatch", 1.0)
-        }
-        TaskKind::Raster | TaskKind::RtTrace => {
-            ShaderProgram::dispatch_fill("ucf_gfx_placeholder", 0.0)
         }
     }
 }

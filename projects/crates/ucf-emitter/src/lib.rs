@@ -11,7 +11,7 @@ pub use dxil::{emit_dxil, emit_raster_tri_dxbc, RasterTriDxbc};
 pub use hip::{emit_hip, emit_hsaco};
 pub use ptx::emit_ptx;
 pub use spirv::{emit_raster_tri_spirv, emit_spirv, RasterTriSpirv};
-pub use task::{needs_kernel, program_from_task};
+pub use task::{needs_kernel, program_from_task, try_program_from_task, ProgramLowerError};
 
 /// Target ISA for [`EmittedShader::emit`].
 #[derive(Debug, Clone, PartialEq, Eq)]
