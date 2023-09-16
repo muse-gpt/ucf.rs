@@ -1,6 +1,6 @@
 use ucf_program::{
-    orbit_loop_accumulate, orbit_step_once, program_hash, validate_program, vector_math_normalize,
-    CpuInterpreter, Value,
+    orbit_loop_accumulate, orbit_step_once, program_hash, ray_batch_steps, validate_program,
+    vector_math_normalize, CpuInterpreter, Value,
 };
 
 #[test]
@@ -43,4 +43,15 @@ fn orbit_loop_bounded_cpu() {
     // sum 0..63 = 63*64/2 = 2016
     assert!((out.value.as_f64().expect("f64") - 2016.0).abs() < 1e-9);
     assert_eq!(out.loop_steps, 64);
+}
+
+#[test]
+fn ray_batch_parallel_cpu() {
+    let prog = ray_batch_steps();
+    validate_program(&prog).expect("valid");
+    let mut cpu = CpuInterpreter::new();
+    let results = cpu.run_parallel(&prog, 4).expect("parallel");
+    assert_eq!(results.len(), 4);
+    assert!((results[0].value.as_f64().expect("f64") - 1.0).abs() < 1e-9);
+    assert!((results[3].value.as_f64().expect("f64") - 4.0).abs() < 1e-9);
 }

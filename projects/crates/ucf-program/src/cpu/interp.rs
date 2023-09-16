@@ -269,12 +269,18 @@ impl CpuInterpreter {
                 };
                 Ok(Value::F64(out))
             }
-            BinOp::Min | BinOp::Max => {
+            BinOp::Min | BinOp::Max | BinOp::Mod => {
                 let la = l.as_f64().map_err(|_| ProgramError::UnsupportedOp("minmax".into()))?;
                 let ra = r.as_f64().map_err(|_| ProgramError::UnsupportedOp("minmax".into()))?;
                 Ok(Value::F64(match op {
                     BinOp::Min => la.min(ra),
                     BinOp::Max => la.max(ra),
+                    BinOp::Mod => {
+                        if ra == 0.0 {
+                            return Err(ProgramError::DivideByZero);
+                        }
+                        la % ra
+                    }
                     _ => unreachable!(),
                 }))
             }

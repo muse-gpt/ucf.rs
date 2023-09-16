@@ -103,3 +103,59 @@ pub fn orbit_loop_accumulate() -> Program {
         entry: 0,
     }
 }
+
+/// RayBatch：每实例步数 = `(global_id % 16) + 1`，验证并行实例不同路径长度。
+pub fn ray_batch_steps() -> Program {
+    let body = vec![
+        Stmt::Let {
+            id: 0,
+            ty: Ty::f64(),
+            init: Expr::ConstF64(0.0),
+        },
+        Stmt::Let {
+            id: 1,
+            ty: Ty::f64(),
+            init: Expr::BinOp {
+                op: BinOp::Add,
+                lhs: Box::new(Expr::BinOp {
+                    op: BinOp::Mod,
+                    lhs: Box::new(Expr::GlobalId),
+                    rhs: Box::new(Expr::ConstF64(16.0)),
+                }),
+                rhs: Box::new(Expr::ConstF64(1.0)),
+            },
+        },
+        Stmt::For {
+            iter: 2,
+            limit: 32,
+            body: vec![Stmt::If {
+                cond: Expr::BinOp {
+                    op: BinOp::Lt,
+                    lhs: Box::new(Expr::LoadLocal(2)),
+                    rhs: Box::new(Expr::LoadLocal(1)),
+                },
+                then_body: vec![Stmt::StoreLocal {
+                    id: 0,
+                    value: Expr::BinOp {
+                        op: BinOp::Add,
+                        lhs: Box::new(Expr::LoadLocal(0)),
+                        rhs: Box::new(Expr::ConstF64(1.0)),
+                    },
+                }],
+                else_body: vec![],
+            }],
+        },
+        Stmt::Return(Expr::LoadLocal(0)),
+    ];
+    Program {
+        version: 1,
+        functions: vec![Function {
+            name: "ray_batch_steps".into(),
+            params: vec![],
+            locals: vec![(0, Ty::f64()), (1, Ty::f64())],
+            body,
+            ret: Ty::f64(),
+        }],
+        entry: 0,
+    }
+}

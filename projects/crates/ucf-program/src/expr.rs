@@ -9,6 +9,7 @@ pub enum BinOp {
     Div,
     Min,
     Max,
+    Mod,
     Dot,
     Lt,
     Le,

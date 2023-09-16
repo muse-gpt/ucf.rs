@@ -14,7 +14,7 @@ pub use cpu::{CpuExecResult, CpuInterpreter, ParallelInstance, Value};
 pub use error::{ProgramError, ValidateError};
 pub use expr::{BinOp, Expr, UnOp};
 pub use hash::program_hash;
-pub use prelude::{orbit_loop_accumulate, orbit_step_once, vector_math_normalize};
+pub use prelude::{orbit_loop_accumulate, orbit_step_once, ray_batch_steps, vector_math_normalize};
 pub use program::{Function, KernelBinding, ParallelDim, Program};
 pub use stmt::Stmt;
 pub use types::{ScalarTy, Ty};
