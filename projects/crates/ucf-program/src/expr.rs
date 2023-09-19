@@ -10,6 +10,7 @@ pub enum BinOp {
     Min,
     Max,
     Mod,
+    Pow,
     Dot,
     Lt,
     Le,
@@ -30,6 +31,9 @@ pub enum UnOp {
     Length,
     Normalize,
     Abs,
+    Ln,
+    /// 取向量分量：0=x，1=y，2=z。
+    Vec3Comp(u8),
 }
 
 /// 表达式节点。
@@ -58,6 +62,12 @@ pub enum Expr {
         cond: Box<Expr>,
         then_: Box<Expr>,
         else_: Box<Expr>,
+    },
+    /// 由三个标量分量构造 `Vec3`。
+    Vec3Compose {
+        x: Box<Expr>,
+        y: Box<Expr>,
+        z: Box<Expr>,
     },
     Call {
         func: u32,

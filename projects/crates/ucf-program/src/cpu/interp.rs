@@ -211,6 +211,16 @@ impl CpuInterpreter {
                     self.eval_expr(else_, program, locals, parallel)
                 }
             }
+            Expr::Vec3Compose { x, y, z } => {
+                let x = self.eval_expr(x, program, locals, parallel)?;
+                let y = self.eval_expr(y, program, locals, parallel)?;
+                let z = self.eval_expr(z, program, locals, parallel)?;
+                Ok(Value::Vec3([
+                    x.as_f64().map_err(|_| type_mismatch("f64", &x))?,
+                    y.as_f64().map_err(|_| type_mismatch("f64", &y))?,
+                    z.as_f64().map_err(|_| type_mismatch("f64", &z))?,
+                ]))
+            }
             Expr::Call { func, args } => {
                 let fn_idx = *func as usize;
                 let callee = program
@@ -251,6 +261,26 @@ impl CpuInterpreter {
                     };
                     return Ok(Value::Vec3(out));
                 }
+                if let (Ok(la), Ok(rs)) = (l.as_vec3(), r.as_f64()) {
+                    let out = match op {
+                        BinOp::Mul => [la[0] * rs, la[1] * rs, la[2] * rs],
+                        BinOp::Div => {
+                            if rs == 0.0 {
+                                return Err(ProgramError::DivideByZero);
+                            }
+                            [la[0] / rs, la[1] / rs, la[2] / rs]
+                        }
+                        _ => return Err(ProgramError::UnsupportedOp(format!("{:?}", op))),
+                    };
+                    return Ok(Value::Vec3(out));
+                }
+                if let (Ok(ls), Ok(ra)) = (l.as_f64(), r.as_vec3()) {
+                    let out = match op {
+                        BinOp::Mul => [ls * ra[0], ls * ra[1], ls * ra[2]],
+                        _ => return Err(ProgramError::UnsupportedOp(format!("{:?}", op))),
+                    };
+                    return Ok(Value::Vec3(out));
+                }
                 let la = l.as_f64().map_err(|_| ProgramError::UnsupportedOp("binop".into()))?;
                 let ra = r.as_f64().map_err(|_| ProgramError::UnsupportedOp("binop".into()))?;
                 let out = match op {
@@ -269,7 +299,7 @@ impl CpuInterpreter {
                 };
                 Ok(Value::F64(out))
             }
-            BinOp::Min | BinOp::Max | BinOp::Mod => {
+            BinOp::Min | BinOp::Max | BinOp::Mod | BinOp::Pow => {
                 let la = l.as_f64().map_err(|_| ProgramError::UnsupportedOp("minmax".into()))?;
                 let ra = r.as_f64().map_err(|_| ProgramError::UnsupportedOp("minmax".into()))?;
                 Ok(Value::F64(match op {
@@ -281,6 +311,7 @@ impl CpuInterpreter {
                         }
                         la % ra
                     }
+                    BinOp::Pow => la.powf(ra),
                     _ => unreachable!(),
                 }))
             }
@@ -316,6 +347,15 @@ impl CpuInterpreter {
             UnOp::Cos => Ok(Value::F64(v.as_f64().map_err(|_| ProgramError::UnsupportedOp("cos".into()))?.cos())),
             UnOp::Atan => Ok(Value::F64(v.as_f64().map_err(|_| ProgramError::UnsupportedOp("atan".into()))?.atan())),
             UnOp::Abs => Ok(Value::F64(v.as_f64().map_err(|_| ProgramError::UnsupportedOp("abs".into()))?.abs())),
+            UnOp::Ln => Ok(Value::F64(v.as_f64().map_err(|_| ProgramError::UnsupportedOp("ln".into()))?.ln())),
+            UnOp::Vec3Comp(axis) => {
+                let a = v.as_vec3().map_err(|_| ProgramError::UnsupportedOp("vec3comp".into()))?;
+                let idx = axis as usize;
+                if idx > 2 {
+                    return Err(ProgramError::UnsupportedOp("vec3comp axis".into()));
+                }
+                Ok(Value::F64(a[idx]))
+            }
             UnOp::Length => {
                 let a = v.as_vec3().map_err(|_| ProgramError::UnsupportedOp("length".into()))?;
                 Ok(Value::F64((a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt()))
