@@ -16,7 +16,8 @@ pub use expr::{BinOp, Expr, UnOp};
 pub use hash::program_hash;
 pub use prelude::{
     disk_shade_novikov, geodesic_capture_classify, geodesic_radial_infall_steps,
-    orbit_loop_accumulate, orbit_step_once, ray_batch_steps, vector_math_normalize,
+    orbit_loop_accumulate, orbit_step_once, post_bloom_extract, ray_batch_steps, tone_map_aces,
+    vector_math_normalize,
 };
 pub use program::{Function, KernelBinding, ParallelDim, Program};
 pub use stmt::Stmt;

@@ -402,6 +402,80 @@ pub fn disk_shade_novikov() -> Program {
     }
 }
 
+/// ToneMap：ACES 拟合色调映射；uniform 0 = 线性 HDR `Vec3`。
+pub fn tone_map_aces() -> Program {
+    use disk_expr::*;
+
+    fn aces_channel(x: Expr) -> Expr {
+        let x = max(x, cnst(0.0));
+        let num = mul(x.clone(), add(mul(cnst(2.51), x.clone()), cnst(0.03)));
+        let den = add(
+            mul(x.clone(), add(mul(cnst(2.43), x.clone()), cnst(0.59))),
+            cnst(0.14),
+        );
+        clamp01(div(num, den))
+    }
+
+    let color = uni(0);
+    let body = vec![Stmt::Return(v3(
+        aces_channel(v3x(color.clone())),
+        aces_channel(v3y(color.clone())),
+        aces_channel(v3z(color)),
+    ))];
+
+    Program {
+        version: 1,
+        functions: vec![Function {
+            name: "tone_map_aces".into(),
+            params: vec![],
+            locals: vec![],
+            body,
+            ret: Ty::vec3(),
+        }],
+        entry: 0,
+    }
+}
+
+/// PostBloom：阈值亮部提取（模糊仍由宿主多尺度 pass 完成）；uniform 0 = 线性 HDR `Vec3`，1 = 阈值。
+pub fn post_bloom_extract() -> Program {
+    use disk_expr::*;
+
+    let color = uni(0);
+    let threshold = uni(1);
+    let zero = v3(cnst(0.0), cnst(0.0), cnst(0.0));
+    let lum = add(
+        add(
+            mul(cnst(0.2126), v3x(color.clone())),
+            mul(cnst(0.7152), v3y(color.clone())),
+        ),
+        mul(cnst(0.0722), v3z(color.clone())),
+    );
+    let scale = div(sub(lum.clone(), threshold.clone()), max(lum.clone(), cnst(1.0e-9)));
+    let scaled = v3(
+        mul(v3x(color.clone()), scale.clone()),
+        mul(v3y(color.clone()), scale.clone()),
+        mul(v3z(color.clone()), scale),
+    );
+
+    let body = vec![Stmt::Return(sel(
+        bin(BinOp::Gt, lum, threshold),
+        scaled,
+        zero,
+    ))];
+
+    Program {
+        version: 1,
+        functions: vec![Function {
+            name: "post_bloom_extract".into(),
+            params: vec![],
+            locals: vec![],
+            body,
+            ret: Ty::vec3(),
+        }],
+        entry: 0,
+    }
+}
+
 /// RayBatch：每实例步数 = `(global_id % 16) + 1`，验证并行实例不同路径长度。
 pub fn ray_batch_steps() -> Program {
     let body = vec![
