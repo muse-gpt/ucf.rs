@@ -402,6 +402,35 @@ pub fn disk_shade_novikov() -> Program {
     }
 }
 
+/// GenerateRays：针孔相机射线方向；uniform 0=`u`，1=`v`，2=`tan(fov_y/2)`，3=`forward`，4=`right`，5=`up`。
+pub fn generate_camera_ray() -> Program {
+    use disk_expr::*;
+
+    let u = uni(0);
+    let v = uni(1);
+    let scale = uni(2);
+    let forward = uni(3);
+    let right = uni(4);
+    let up = uni(5);
+    let dir = add(
+        add(forward, mul(right, mul(u, scale.clone()))),
+        mul(up, mul(v, scale)),
+    );
+    let body = vec![Stmt::Return(normalize(dir))];
+
+    Program {
+        version: 1,
+        functions: vec![Function {
+            name: "generate_camera_ray".into(),
+            params: vec![],
+            locals: vec![],
+            body,
+            ret: Ty::vec3(),
+        }],
+        entry: 0,
+    }
+}
+
 /// ToneMap：ACES 拟合色调映射；uniform 0 = 线性 HDR `Vec3`。
 pub fn tone_map_aces() -> Program {
     use disk_expr::*;
