@@ -495,8 +495,22 @@ impl<'a> Lowerer<'a> {
             CfgInstruction::Binary { op, lhs, rhs, .. } => {
                 let left = *values.get(lhs).ok_or_else(|| ProgramSpirvError::UnsupportedExpression(format!("unknown CFG value {lhs}")))?;
                 let right = *values.get(rhs).ok_or_else(|| ProgramSpirvError::UnsupportedExpression(format!("unknown CFG value {rhs}")))?;
-                let op = match op { BinOp::Add => BinaryOperator::Add, BinOp::Sub => BinaryOperator::Subtract, BinOp::Mul => BinaryOperator::Multiply, BinOp::Div => BinaryOperator::Divide, BinOp::Lt => BinaryOperator::Less, BinOp::Le => BinaryOperator::LessEqual, BinOp::Eq => BinaryOperator::Equal, BinOp::Ne => BinaryOperator::NotEqual, BinOp::Ge => BinaryOperator::GreaterEqual, BinOp::Gt => BinaryOperator::Greater, other => return Err(ProgramSpirvError::UnsupportedExpression(format!("CFG binary {other:?}"))) };
-                self.function.expressions.append(Expression::Binary { op, left, right }, span)
+                let expression = match op {
+                    BinOp::Min => Expression::Math { fun: MathFunction::Min, arg: left, arg1: Some(right), arg2: None, arg3: None },
+                    BinOp::Max => Expression::Math { fun: MathFunction::Max, arg: left, arg1: Some(right), arg2: None, arg3: None },
+                    BinOp::Add => Expression::Binary { op: BinaryOperator::Add, left, right },
+                    BinOp::Sub => Expression::Binary { op: BinaryOperator::Subtract, left, right },
+                    BinOp::Mul => Expression::Binary { op: BinaryOperator::Multiply, left, right },
+                    BinOp::Div => Expression::Binary { op: BinaryOperator::Divide, left, right },
+                    BinOp::Lt => Expression::Binary { op: BinaryOperator::Less, left, right },
+                    BinOp::Le => Expression::Binary { op: BinaryOperator::LessEqual, left, right },
+                    BinOp::Eq => Expression::Binary { op: BinaryOperator::Equal, left, right },
+                    BinOp::Ne => Expression::Binary { op: BinaryOperator::NotEqual, left, right },
+                    BinOp::Ge => Expression::Binary { op: BinaryOperator::GreaterEqual, left, right },
+                    BinOp::Gt => Expression::Binary { op: BinaryOperator::Greater, left, right },
+                    other => return Err(ProgramSpirvError::UnsupportedExpression(format!("CFG binary {other:?}"))),
+                };
+                self.function.expressions.append(expression, span)
             }
             CfgInstruction::Select { cond, then_, else_, .. } => {
                 let condition = *values.get(cond).ok_or_else(|| ProgramSpirvError::UnsupportedExpression(format!("unknown CFG value {cond}")))?;
@@ -562,8 +576,22 @@ impl<'a> Lowerer<'a> {
             }
             Expr::BinOp { op, lhs, rhs } => {
                 let left = self.lower_expr(lhs)?; let right = self.lower_expr(rhs)?;
-                let op = match op { BinOp::Add => BinaryOperator::Add, BinOp::Sub => BinaryOperator::Subtract, BinOp::Mul => BinaryOperator::Multiply, BinOp::Div => BinaryOperator::Divide, BinOp::Lt => BinaryOperator::Less, BinOp::Le => BinaryOperator::LessEqual, BinOp::Eq => BinaryOperator::Equal, BinOp::Ne => BinaryOperator::NotEqual, BinOp::Ge => BinaryOperator::GreaterEqual, BinOp::Gt => BinaryOperator::Greater, other => return Err(ProgramSpirvError::UnsupportedExpression(format!("binary {other:?}"))), };
-                Ok(self.function.expressions.append(Expression::Binary { op, left, right }, span))
+                let expression = match op {
+                    BinOp::Min => Expression::Math { fun: MathFunction::Min, arg: left, arg1: Some(right), arg2: None, arg3: None },
+                    BinOp::Max => Expression::Math { fun: MathFunction::Max, arg: left, arg1: Some(right), arg2: None, arg3: None },
+                    BinOp::Add => Expression::Binary { op: BinaryOperator::Add, left, right },
+                    BinOp::Sub => Expression::Binary { op: BinaryOperator::Subtract, left, right },
+                    BinOp::Mul => Expression::Binary { op: BinaryOperator::Multiply, left, right },
+                    BinOp::Div => Expression::Binary { op: BinaryOperator::Divide, left, right },
+                    BinOp::Lt => Expression::Binary { op: BinaryOperator::Less, left, right },
+                    BinOp::Le => Expression::Binary { op: BinaryOperator::LessEqual, left, right },
+                    BinOp::Eq => Expression::Binary { op: BinaryOperator::Equal, left, right },
+                    BinOp::Ne => Expression::Binary { op: BinaryOperator::NotEqual, left, right },
+                    BinOp::Ge => Expression::Binary { op: BinaryOperator::GreaterEqual, left, right },
+                    BinOp::Gt => Expression::Binary { op: BinaryOperator::Greater, left, right },
+                    other => return Err(ProgramSpirvError::UnsupportedExpression(format!("binary {other:?}"))),
+                };
+                Ok(self.function.expressions.append(expression, span))
             }
             Expr::UnOp { op, arg } => {
                 let arg = self.lower_expr(arg)?;
