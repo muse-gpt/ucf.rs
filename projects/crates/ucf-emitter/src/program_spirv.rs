@@ -528,6 +528,14 @@ impl<'a> Lowerer<'a> {
                     UnOp::Atan => self.function.expressions.append(Expression::Math { fun: MathFunction::Atan, arg, arg1: None, arg2: None, arg3: None }, span),
                     UnOp::Abs => self.function.expressions.append(Expression::Math { fun: MathFunction::Abs, arg, arg1: None, arg2: None, arg3: None }, span),
                     UnOp::Ln => self.function.expressions.append(Expression::Math { fun: MathFunction::Log, arg, arg1: None, arg2: None, arg3: None }, span),
+                    UnOp::IsFinite => {
+                        let same = self.function.expressions.append(Expression::Binary { op: BinaryOperator::Equal, left: arg, right: arg }, span);
+                        let abs = self.function.expressions.append(Expression::Math { fun: MathFunction::Abs, arg, arg1: None, arg2: None, arg3: None }, span);
+                        let limit = self.function.expressions.append(Expression::Literal(Literal::F32(f32::MAX)), span);
+                        let below_limit = self.function.expressions.append(Expression::Binary { op: BinaryOperator::Less, left: abs, right: limit }, span);
+                        let false_value = self.function.expressions.append(Expression::Literal(Literal::Bool(false)), span);
+                        self.function.expressions.append(Expression::Select { condition: same, accept: below_limit, reject: false_value }, span)
+                    }
                     other => return Err(ProgramSpirvError::UnsupportedExpression(format!("CFG unary {other:?}"))),
                 }
             }
@@ -549,6 +557,7 @@ impl<'a> Lowerer<'a> {
         let span = naga::Span::UNDEFINED;
         match expr {
             Expr::ConstF32(v) => Ok(self.function.expressions.append(Expression::Literal(Literal::F32(*v)), span)),
+            Expr::ConstBool(v) => Ok(self.function.expressions.append(Expression::Literal(Literal::Bool(*v)), span)),
             Expr::ConstU32(v) => Ok(self.function.expressions.append(Expression::Literal(Literal::U32(*v)), span)),
             Expr::GlobalId => Ok(self.gid_x),
             Expr::LoadUniform(slot) => {
@@ -603,6 +612,14 @@ impl<'a> Lowerer<'a> {
                     UnOp::Atan => Expression::Math { fun: MathFunction::Atan, arg, arg1: None, arg2: None, arg3: None },
                     UnOp::Abs => Expression::Math { fun: MathFunction::Abs, arg, arg1: None, arg2: None, arg3: None },
                     UnOp::Ln => Expression::Math { fun: MathFunction::Log, arg, arg1: None, arg2: None, arg3: None },
+                    UnOp::IsFinite => {
+                        let same = self.function.expressions.append(Expression::Binary { op: BinaryOperator::Equal, left: arg, right: arg }, span);
+                        let abs = self.function.expressions.append(Expression::Math { fun: MathFunction::Abs, arg, arg1: None, arg2: None, arg3: None }, span);
+                        let limit = self.function.expressions.append(Expression::Literal(Literal::F32(f32::MAX)), span);
+                        let below_limit = self.function.expressions.append(Expression::Binary { op: BinaryOperator::Less, left: abs, right: limit }, span);
+                        let false_value = self.function.expressions.append(Expression::Literal(Literal::Bool(false)), span);
+                        Expression::Select { condition: same, accept: below_limit, reject: false_value }
+                    }
                     other => return Err(ProgramSpirvError::UnsupportedExpression(format!("unary {other:?}"))),
                 };
                 Ok(self.function.expressions.append(expression, span))
