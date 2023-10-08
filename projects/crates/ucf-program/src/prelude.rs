@@ -1,561 +1,158 @@
-//! 黑洞验证切片用的内建程序模板。
+//! 通用程序构造器。
 
 use crate::expr::{BinOp, Expr, UnOp};
 use crate::program::{Function, Program};
 use crate::stmt::Stmt;
 use crate::types::Ty;
 
-mod disk_expr {
-    use super::*;
-
-    pub fn uni(slot: u32) -> Expr {
-        Expr::LoadUniform(slot)
-    }
-    pub fn loc(id: u32) -> Expr {
-        Expr::LoadLocal(id)
-    }
-    pub fn cnst(v: f64) -> Expr {
-        Expr::ConstF64(v)
-    }
-    pub fn bin(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
-        Expr::BinOp {
-            op,
-            lhs: Box::new(lhs),
-            rhs: Box::new(rhs),
-        }
-    }
-    pub fn un(op: UnOp, arg: Expr) -> Expr {
-        Expr::UnOp {
-            op,
-            arg: Box::new(arg),
-        }
-    }
-    pub fn sel(cond: Expr, then_: Expr, else_: Expr) -> Expr {
-        Expr::Select {
-            cond: Box::new(cond),
-            then_: Box::new(then_),
-            else_: Box::new(else_),
-        }
-    }
-    pub fn v3(x: Expr, y: Expr, z: Expr) -> Expr {
-        Expr::Vec3Compose {
-            x: Box::new(x),
-            y: Box::new(y),
-            z: Box::new(z),
-        }
-    }
-    pub fn call(func: u32, args: Vec<Expr>) -> Expr {
-        Expr::Call { func, args }
-    }
-    pub fn add(a: Expr, b: Expr) -> Expr {
-        bin(BinOp::Add, a, b)
-    }
-    pub fn sub(a: Expr, b: Expr) -> Expr {
-        bin(BinOp::Sub, a, b)
-    }
-    pub fn mul(a: Expr, b: Expr) -> Expr {
-        bin(BinOp::Mul, a, b)
-    }
-    pub fn div(a: Expr, b: Expr) -> Expr {
-        bin(BinOp::Div, a, b)
-    }
-    pub fn min(a: Expr, b: Expr) -> Expr {
-        bin(BinOp::Min, a, b)
-    }
-    pub fn max(a: Expr, b: Expr) -> Expr {
-        bin(BinOp::Max, a, b)
-    }
-    pub fn pow(a: Expr, b: Expr) -> Expr {
-        bin(BinOp::Pow, a, b)
-    }
-    pub fn lt(a: Expr, b: Expr) -> Expr {
-        bin(BinOp::Lt, a, b)
-    }
-    pub fn le(a: Expr, b: Expr) -> Expr {
-        bin(BinOp::Le, a, b)
-    }
-    pub fn dot(a: Expr, b: Expr) -> Expr {
-        bin(BinOp::Dot, a, b)
-    }
-    pub fn neg(a: Expr) -> Expr {
-        un(UnOp::Neg, a)
-    }
-    pub fn sqrt(a: Expr) -> Expr {
-        un(UnOp::Sqrt, a)
-    }
-    pub fn ln(a: Expr) -> Expr {
-        un(UnOp::Ln, a)
-    }
-    pub fn normalize(a: Expr) -> Expr {
-        un(UnOp::Normalize, a)
-    }
-    pub fn v3x(v: Expr) -> Expr {
-        un(UnOp::Vec3Comp(0), v)
-    }
-    pub fn v3y(v: Expr) -> Expr {
-        un(UnOp::Vec3Comp(1), v)
-    }
-    pub fn v3z(v: Expr) -> Expr {
-        un(UnOp::Vec3Comp(2), v)
-    }
-    pub fn ge(a: Expr, b: Expr) -> Expr {
-        bin(BinOp::Ge, a, b)
-    }
-    pub fn clamp01(x: Expr) -> Expr {
-        min(cnst(1.0), max(cnst(0.0), x))
-    }
+fn c(v: f64) -> Expr {
+    Expr::ConstF64(v)
 }
 
-/// VectorMath：归一化 uniform 槽 0 的 `Vec3`。
+fn bin(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
+    Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }
+}
+
+/// 构建向量归一化程序，输入为 uniform 0。
 pub fn vector_math_normalize() -> Program {
-    let body = vec![
-        Stmt::Let {
-            id: 0,
-            ty: Ty::vec3(),
-            init: Expr::LoadUniform(0),
-        },
-        Stmt::Return(Expr::UnOp {
-            op: UnOp::Normalize,
-            arg: Box::new(Expr::LoadLocal(0)),
-        }),
-    ];
     Program {
         version: 1,
         functions: vec![Function {
             name: "vector_math_normalize".into(),
             params: vec![],
-            locals: vec![(0, Ty::vec3())],
-            body,
+            locals: vec![],
+            body: vec![Stmt::Return(Expr::UnOp { op: UnOp::Normalize, arg: Box::new(Expr::LoadUniform(0)) })],
             ret: Ty::vec3(),
         }],
         entry: 0,
     }
 }
 
-/// OrbitStep：单步半径更新 `r_next = r + dr * step_size`（uniform 0=r, 1=dr, 2=step）。
-pub fn orbit_step_once() -> Program {
-    let body = vec![
-        Stmt::Let {
-            id: 0,
-            ty: Ty::f64(),
-            init: Expr::BinOp {
-                op: BinOp::Add,
-                lhs: Box::new(Expr::LoadUniform(0)),
-                rhs: Box::new(Expr::BinOp {
-                    op: BinOp::Mul,
-                    lhs: Box::new(Expr::LoadUniform(1)),
-                    rhs: Box::new(Expr::LoadUniform(2)),
-                }),
-            },
-        },
-        Stmt::Return(Expr::LoadLocal(0)),
-    ];
+/// 构建单步标量更新程序，输入为 uniform 0、1、2。
+pub fn scalar_step_once() -> Program {
     Program {
         version: 1,
         functions: vec![Function {
-            name: "orbit_step_once".into(),
+            name: "scalar_step_once".into(),
+            params: vec![],
+            locals: vec![],
+            body: vec![Stmt::Return(bin(
+                BinOp::Add,
+                Expr::LoadUniform(0),
+                bin(BinOp::Mul, Expr::LoadUniform(1), Expr::LoadUniform(2)),
+            ))],
+            ret: Ty::f64(),
+        }],
+        entry: 0,
+    }
+}
+
+/// 构建固定上限累加程序，输入为 uniform 0 的每步增量。
+pub fn bounded_accumulate() -> Program {
+    Program {
+        version: 1,
+        functions: vec![Function {
+            name: "bounded_accumulate".into(),
             params: vec![],
             locals: vec![(0, Ty::f64())],
-            body,
+            body: vec![
+                Stmt::Let { id: 0, ty: Ty::f64(), init: c(0.0) },
+                Stmt::For {
+                    iter: 1,
+                    limit: 64,
+                    body: vec![Stmt::StoreLocal { id: 0, value: bin(BinOp::Add, Expr::LoadLocal(0), Expr::LoadUniform(0)) }],
+                },
+                Stmt::Return(Expr::LoadLocal(0)),
+            ],
             ret: Ty::f64(),
         }],
         entry: 0,
     }
 }
 
-/// OrbitLoop：有上限累加 `sum += i`，`i` 从 0 到 `limit-1`（uniform 0=limit）。
-pub fn orbit_loop_accumulate() -> Program {
-    let body = vec![
-        Stmt::Let {
-            id: 0,
-            ty: Ty::f64(),
-            init: Expr::ConstF64(0.0),
-        },
-        Stmt::Let {
-            id: 1,
-            ty: Ty::f64(),
-            init: Expr::LoadUniform(0),
-        },
-        Stmt::For {
-            iter: 2,
-            limit: 64,
-            body: vec![
-                Stmt::StoreLocal {
-                    id: 0,
-                    value: Expr::BinOp {
-                        op: BinOp::Add,
-                        lhs: Box::new(Expr::LoadLocal(0)),
-                        rhs: Box::new(Expr::LoadLocal(2)),
-                    },
-                },
-            ],
-        },
-        Stmt::Return(Expr::LoadLocal(0)),
-    ];
+/// 构建并行实例路径长度程序。
+pub fn parallel_path_steps() -> Program {
     Program {
         version: 1,
         functions: vec![Function {
-            name: "orbit_loop_accumulate".into(),
+            name: "parallel_path_steps".into(),
             params: vec![],
             locals: vec![(0, Ty::f64()), (1, Ty::f64())],
-            body,
-            ret: Ty::f64(),
-        }],
-        entry: 0,
-    }
-}
-
-/// GeodesicCapture：uniform 0=`b`，1=`b_c`；返回 `1.0` 当 `b < b_c`（史瓦西解析捕获）。
-pub fn geodesic_capture_classify() -> Program {
-    let body = vec![Stmt::Return(Expr::Select {
-        cond: Box::new(Expr::BinOp {
-            op: BinOp::Lt,
-            lhs: Box::new(Expr::LoadUniform(0)),
-            rhs: Box::new(Expr::LoadUniform(1)),
-        }),
-        then_: Box::new(Expr::ConstF64(1.0)),
-        else_: Box::new(Expr::ConstF64(0.0)),
-    })];
-    Program {
-        version: 1,
-        functions: vec![Function {
-            name: "geodesic_capture_classify".into(),
-            params: vec![],
-            locals: vec![],
-            body,
-            ret: Ty::f64(),
-        }],
-        entry: 0,
-    }
-}
-
-/// GeodesicRadial：径向落向视界，uniform 0=`r`，1=`r_s`，2=`step_size`；捕获时返回步数，否则 `-1`。
-pub fn geodesic_radial_infall_steps() -> Program {
-    let body = vec![
-        Stmt::Let {
-            id: 0,
-            ty: Ty::f64(),
-            init: Expr::LoadUniform(0),
-        },
-        Stmt::Let {
-            id: 1,
-            ty: Ty::f64(),
-            init: Expr::ConstF64(0.0),
-        },
-        Stmt::While {
-            cond: Expr::BinOp {
-                op: BinOp::Gt,
-                lhs: Box::new(Expr::LoadLocal(0)),
-                rhs: Box::new(Expr::LoadUniform(1)),
-            },
-            limit: 512,
             body: vec![
-                Stmt::StoreLocal {
-                    id: 0,
-                    value: Expr::BinOp {
-                        op: BinOp::Sub,
-                        lhs: Box::new(Expr::LoadLocal(0)),
-                        rhs: Box::new(Expr::LoadUniform(2)),
-                    },
+                Stmt::Let { id: 0, ty: Ty::f64(), init: c(0.0) },
+                Stmt::Let { id: 1, ty: Ty::f64(), init: bin(BinOp::Add, bin(BinOp::Mod, Expr::GlobalId, c(16.0)), c(1.0)) },
+                Stmt::For {
+                    iter: 2,
+                    limit: 32,
+                    body: vec![Stmt::If {
+                        cond: bin(BinOp::Lt, Expr::LoadLocal(2), Expr::LoadLocal(1)),
+                        then_body: vec![Stmt::StoreLocal { id: 0, value: bin(BinOp::Add, Expr::LoadLocal(0), c(1.0)) }],
+                        else_body: vec![],
+                    }],
                 },
-                Stmt::StoreLocal {
-                    id: 1,
-                    value: Expr::BinOp {
-                        op: BinOp::Add,
-                        lhs: Box::new(Expr::LoadLocal(1)),
-                        rhs: Box::new(Expr::ConstF64(1.0)),
-                    },
-                },
+                Stmt::Return(Expr::LoadLocal(0)),
             ],
-        },
-        Stmt::If {
-            cond: Expr::BinOp {
-                op: BinOp::Le,
-                lhs: Box::new(Expr::LoadLocal(0)),
-                rhs: Box::new(Expr::LoadUniform(1)),
-            },
-            then_body: vec![Stmt::Return(Expr::LoadLocal(1))],
-            else_body: vec![Stmt::Return(Expr::ConstF64(-1.0))],
-        },
-    ];
-    Program {
-        version: 1,
-        functions: vec![Function {
-            name: "geodesic_radial_infall_steps".into(),
-            params: vec![],
-            locals: vec![(0, Ty::f64()), (1, Ty::f64())],
-            body,
             ret: Ty::f64(),
         }],
         entry: 0,
     }
 }
 
-/// DiskShade：Novikov-Thorne 薄盘 HDR 辐射；uniform 0=`r`，1=`doppler`，2=`r_in`，3=`r_out`，4=`M`，5=`mdot`。
-pub fn disk_shade_novikov() -> Program {
-    use disk_expr::*;
-
-    let radius = uni(0);
-    let doppler = uni(1);
-    let r_in = uni(2);
-    let r_out = uni(3);
-    let mass = uni(4);
-    let mdot = uni(5);
-    let zero_v3 = v3(cnst(0.0), cnst(0.0), cnst(0.0));
-
-    let temp_expr = mul(
-        mul(
-            div(mdot, mul(mass.clone(), mass)),
-            pow(div(r_in.clone(), radius.clone()), cnst(0.75)),
-        ),
-        cnst(5000.0),
-    );
-    let brightness = pow(
-        max(cnst(0.0), min(doppler, cnst(8.0))),
-        cnst(3.0),
-    );
-
-    let t_le_66 = le(loc(1), cnst(66.0));
-    let t_le_19 = le(loc(1), cnst(19.0));
-    let cool_r = cnst(255.0);
-    let cool_g = sub(
-        mul(cnst(99.4708025861), ln(loc(1))),
-        cnst(161.1195681661),
-    );
-    let cool_b = sel(
-        t_le_19,
-        cnst(0.0),
-        sub(
-            mul(cnst(138.5177312231), ln(sub(loc(1), cnst(10.0)))),
-            cnst(305.0447927307),
-        ),
-    );
-    let warm_r = mul(
-        cnst(329.698727446),
-        pow(sub(loc(1), cnst(60.0)), cnst(-0.1332047592)),
-    );
-    let warm_g = mul(
-        cnst(288.1221695283),
-        pow(sub(loc(1), cnst(60.0)), cnst(-0.0755148492)),
-    );
-    let warm_b = cnst(255.0);
-    let ch_r = sel(t_le_66.clone(), cool_r, warm_r);
-    let ch_g = sel(t_le_66.clone(), cool_g, warm_g);
-    let ch_b = sel(t_le_66, cool_b, warm_b);
-    let radiance = mul(
-        v3(
-            clamp01(div(ch_r, cnst(255.0))),
-            clamp01(div(ch_g, cnst(255.0))),
-            clamp01(div(ch_b, cnst(255.0))),
-        ),
-        loc(5),
-    );
-
-    let shade_body = vec![
-        Stmt::Let {
-            id: 0,
-            ty: Ty::f64(),
-            init: temp_expr,
-        },
-        Stmt::If {
-            cond: le(loc(0), cnst(0.0)),
-            then_body: vec![Stmt::Return(zero_v3.clone())],
-            else_body: vec![],
-        },
-        Stmt::Let {
-            id: 1,
-            ty: Ty::f64(),
-            init: mul(loc(0), cnst(0.01)),
-        },
-        Stmt::Let {
-            id: 5,
-            ty: Ty::f64(),
-            init: brightness,
-        },
-        Stmt::Return(radiance),
-    ];
-
-    let body = vec![Stmt::If {
-        cond: ge(radius.clone(), r_in.clone()),
-        then_body: vec![Stmt::If {
-            cond: le(radius, r_out),
-            then_body: shade_body,
-            else_body: vec![Stmt::Return(zero_v3.clone())],
-        }],
-        else_body: vec![Stmt::Return(zero_v3)],
-    }];
-
-    Program {
-        version: 1,
-        functions: vec![Function {
-            name: "disk_shade_novikov".into(),
-            params: vec![],
-            locals: vec![
-                (0, Ty::f64()),
-                (1, Ty::f64()),
-                (5, Ty::f64()),
-            ],
-            body,
-            ret: Ty::vec3(),
-        }],
-        entry: 0,
-    }
-}
-
-/// GenerateRays：针孔相机射线方向；uniform 0=`u`，1=`v`，2=`tan(fov_y/2)`，3=`forward`，4=`right`，5=`up`。
-pub fn generate_camera_ray() -> Program {
-    use disk_expr::*;
-
-    let u = uni(0);
-    let v = uni(1);
-    let scale = uni(2);
-    let forward = uni(3);
-    let right = uni(4);
-    let up = uni(5);
-    let dir = add(
-        add(forward, mul(right, mul(u, scale.clone()))),
-        mul(up, mul(v, scale)),
-    );
-    let body = vec![Stmt::Return(normalize(dir))];
-
-    Program {
-        version: 1,
-        functions: vec![Function {
-            name: "generate_camera_ray".into(),
-            params: vec![],
-            locals: vec![],
-            body,
-            ret: Ty::vec3(),
-        }],
-        entry: 0,
-    }
-}
-
-/// ToneMap：ACES 拟合色调映射；uniform 0 = 线性 HDR `Vec3`。
+/// 构建 ACES 拟合色调映射程序，输入为 uniform 0 的线性 HDR `Vec3`。
 pub fn tone_map_aces() -> Program {
-    use disk_expr::*;
-
-    fn aces_channel(x: Expr) -> Expr {
-        let x = max(x, cnst(0.0));
-        let num = mul(x.clone(), add(mul(cnst(2.51), x.clone()), cnst(0.03)));
-        let den = add(
-            mul(x.clone(), add(mul(cnst(2.43), x.clone()), cnst(0.59))),
-            cnst(0.14),
-        );
-        clamp01(div(num, den))
+    fn channel(x: Expr) -> Expr {
+        let x = bin(BinOp::Max, x, c(0.0));
+        let num = bin(BinOp::Mul, x.clone(), bin(BinOp::Add, bin(BinOp::Mul, c(2.51), x.clone()), c(0.03)));
+        let den =
+            bin(BinOp::Add, bin(BinOp::Mul, x.clone(), bin(BinOp::Add, bin(BinOp::Mul, c(2.43), x.clone()), c(0.59))), c(0.14));
+        bin(BinOp::Min, c(1.0), bin(BinOp::Max, c(0.0), bin(BinOp::Div, num, den)))
     }
-
-    let color = uni(0);
-    let body = vec![Stmt::Return(v3(
-        aces_channel(v3x(color.clone())),
-        aces_channel(v3y(color.clone())),
-        aces_channel(v3z(color)),
-    ))];
-
+    let color = Expr::LoadUniform(0);
+    let comp = |index| Expr::UnOp { op: UnOp::Vec3Comp(index), arg: Box::new(color.clone()) };
     Program {
         version: 1,
         functions: vec![Function {
             name: "tone_map_aces".into(),
             params: vec![],
             locals: vec![],
-            body,
+            body: vec![Stmt::Return(Expr::Vec3Compose {
+                x: Box::new(channel(comp(0))),
+                y: Box::new(channel(comp(1))),
+                z: Box::new(channel(comp(2))),
+            })],
             ret: Ty::vec3(),
         }],
         entry: 0,
     }
 }
 
-/// PostBloom：阈值亮部提取（模糊仍由宿主多尺度 pass 完成）；uniform 0 = 线性 HDR `Vec3`，1 = 阈值。
+/// 构建泛光亮部提取程序，输入为 uniform 0 的颜色、uniform 1 的阈值。
 pub fn post_bloom_extract() -> Program {
-    use disk_expr::*;
-
-    let color = uni(0);
-    let threshold = uni(1);
-    let zero = v3(cnst(0.0), cnst(0.0), cnst(0.0));
-    let lum = add(
-        add(
-            mul(cnst(0.2126), v3x(color.clone())),
-            mul(cnst(0.7152), v3y(color.clone())),
-        ),
-        mul(cnst(0.0722), v3z(color.clone())),
+    let color = Expr::LoadUniform(0);
+    let comp = |index| Expr::UnOp { op: UnOp::Vec3Comp(index), arg: Box::new(color.clone()) };
+    let lum = bin(
+        BinOp::Add,
+        bin(BinOp::Add, bin(BinOp::Mul, c(0.2126), comp(0)), bin(BinOp::Mul, c(0.7152), comp(1))),
+        bin(BinOp::Mul, c(0.0722), comp(2)),
     );
-    let scale = div(sub(lum.clone(), threshold.clone()), max(lum.clone(), cnst(1.0e-9)));
-    let scaled = v3(
-        mul(v3x(color.clone()), scale.clone()),
-        mul(v3y(color.clone()), scale.clone()),
-        mul(v3z(color.clone()), scale),
-    );
-
-    let body = vec![Stmt::Return(sel(
-        bin(BinOp::Gt, lum, threshold),
-        scaled,
-        zero,
-    ))];
-
+    let scale = bin(BinOp::Div, bin(BinOp::Sub, lum.clone(), Expr::LoadUniform(1)), bin(BinOp::Max, lum.clone(), c(1.0e-9)));
+    let bright = Expr::Vec3Compose {
+        x: Box::new(bin(BinOp::Mul, comp(0), scale.clone())),
+        y: Box::new(bin(BinOp::Mul, comp(1), scale.clone())),
+        z: Box::new(bin(BinOp::Mul, comp(2), scale)),
+    };
     Program {
         version: 1,
         functions: vec![Function {
             name: "post_bloom_extract".into(),
             params: vec![],
             locals: vec![],
-            body,
+            body: vec![Stmt::Return(Expr::Select {
+                cond: Box::new(bin(BinOp::Gt, lum, Expr::LoadUniform(1))),
+                then_: Box::new(bright),
+                else_: Box::new(Expr::Vec3Compose { x: Box::new(c(0.0)), y: Box::new(c(0.0)), z: Box::new(c(0.0)) }),
+            })],
             ret: Ty::vec3(),
-        }],
-        entry: 0,
-    }
-}
-
-/// RayBatch：每实例步数 = `(global_id % 16) + 1`，验证并行实例不同路径长度。
-pub fn ray_batch_steps() -> Program {
-    let body = vec![
-        Stmt::Let {
-            id: 0,
-            ty: Ty::f64(),
-            init: Expr::ConstF64(0.0),
-        },
-        Stmt::Let {
-            id: 1,
-            ty: Ty::f64(),
-            init: Expr::BinOp {
-                op: BinOp::Add,
-                lhs: Box::new(Expr::BinOp {
-                    op: BinOp::Mod,
-                    lhs: Box::new(Expr::GlobalId),
-                    rhs: Box::new(Expr::ConstF64(16.0)),
-                }),
-                rhs: Box::new(Expr::ConstF64(1.0)),
-            },
-        },
-        Stmt::For {
-            iter: 2,
-            limit: 32,
-            body: vec![Stmt::If {
-                cond: Expr::BinOp {
-                    op: BinOp::Lt,
-                    lhs: Box::new(Expr::LoadLocal(2)),
-                    rhs: Box::new(Expr::LoadLocal(1)),
-                },
-                then_body: vec![Stmt::StoreLocal {
-                    id: 0,
-                    value: Expr::BinOp {
-                        op: BinOp::Add,
-                        lhs: Box::new(Expr::LoadLocal(0)),
-                        rhs: Box::new(Expr::ConstF64(1.0)),
-                    },
-                }],
-                else_body: vec![],
-            }],
-        },
-        Stmt::Return(Expr::LoadLocal(0)),
-    ];
-    Program {
-        version: 1,
-        functions: vec![Function {
-            name: "ray_batch_steps".into(),
-            params: vec![],
-            locals: vec![(0, Ty::f64()), (1, Ty::f64())],
-            body,
-            ret: Ty::f64(),
         }],
         entry: 0,
     }

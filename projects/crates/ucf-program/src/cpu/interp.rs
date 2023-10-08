@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::error::ProgramError;
 use crate::expr::{BinOp, Expr, UnOp};
 use crate::program::{Function, Program};
-use crate::stmt::Stmt;
+use crate::stmt::{CfgInstruction, CfgTerminator, Stmt};
 use crate::validate::validate_program;
 
 use super::value::Value;
@@ -21,18 +21,23 @@ pub struct CpuExecResult {
     pub loop_steps: u32,
 }
 
+enum Flow {
+    Next,
+    Break,
+    Continue,
+    Return(Value),
+}
+
 /// CPU 语义参考解释器（F32 主路径）。
 pub struct CpuInterpreter {
     uniforms: HashMap<u32, Value>,
+    buffers: HashMap<u32, Vec<Value>>,
     max_while: u32,
 }
 
 impl CpuInterpreter {
     pub fn new() -> Self {
-        Self {
-            uniforms: HashMap::new(),
-            max_while: 1_000_000,
-        }
+        Self { uniforms: HashMap::new(), buffers: HashMap::new(), max_while: 1_000_000 }
     }
 
     pub fn with_uniform(&mut self, slot: u32, value: Value) -> &mut Self {
@@ -40,30 +45,37 @@ impl CpuInterpreter {
         self
     }
 
+    pub fn with_buffer(&mut self, resource: u32, values: Vec<Value>) -> &mut Self {
+        self.buffers.insert(resource, values);
+        self
+    }
+
+    pub fn buffer(&self, resource: u32) -> Option<&[Value]> {
+        self.buffers.get(&resource).map(Vec::as_slice)
+    }
+
+    pub fn resource_ids(&self) -> impl Iterator<Item = u32> + '_ {
+        self.buffers.keys().copied()
+    }
+
     pub fn run(&mut self, program: &Program) -> Result<CpuExecResult, ProgramError> {
         validate_program(program)?;
-        let func = program
-            .entry_fn()
-            .ok_or(ValidateError::EmptyProgram)?;
+        let func = program.entry_fn().ok_or(ValidateError::EmptyProgram)?;
         let mut locals = HashMap::new();
         let mut loop_steps = 0u32;
         let value = self.exec_function(func, program, &mut locals, &mut loop_steps, None)?;
         Ok(CpuExecResult { value, loop_steps })
     }
 
-    pub fn run_parallel(
-        &mut self,
-        program: &Program,
-        count: u32,
-    ) -> Result<Vec<CpuExecResult>, ProgramError> {
+    pub fn run_parallel(&mut self, program: &Program, count: u32) -> Result<Vec<CpuExecResult>, ProgramError> {
+        validate_program(program)?;
         let mut out = Vec::with_capacity(count as usize);
         for global_id in 0..count {
             let func = program.entry_fn().ok_or(ValidateError::EmptyProgram)?;
             let mut locals = HashMap::new();
             let mut loop_steps = 0u32;
             let inst = ParallelInstance { global_id };
-            let value =
-                self.exec_function(func, program, &mut locals, &mut loop_steps, Some(inst))?;
+            let value = self.exec_function(func, program, &mut locals, &mut loop_steps, Some(inst))?;
             out.push(CpuExecResult { value, loop_steps });
         }
         Ok(out)
@@ -77,9 +89,126 @@ impl CpuInterpreter {
         loop_steps: &mut u32,
         parallel: Option<ParallelInstance>,
     ) -> Result<Value, ProgramError> {
+        if func.body.len() == 1 {
+            if let Stmt::Cfg { entry, blocks } = &func.body[0] {
+                return self.exec_cfg(*entry, blocks, program, locals, loop_steps, parallel);
+            }
+        }
         match self.exec_stmts(&func.body, program, locals, loop_steps, parallel, false)? {
-            Some(v) => Ok(v),
-            None => Ok(Value::F32(0.0)),
+            Flow::Return(v) => Ok(v),
+            Flow::Next => Ok(Value::F32(0.0)),
+            Flow::Break | Flow::Continue => Err(ProgramError::BadControlFlow),
+        }
+    }
+
+    fn exec_cfg(
+        &mut self,
+        entry: u32,
+        blocks: &[crate::CfgBlock],
+        _program: &Program,
+        _locals: &mut HashMap<u32, Value>,
+        loop_steps: &mut u32,
+        parallel: Option<ParallelInstance>,
+    ) -> Result<Value, ProgramError> {
+        let mut values = HashMap::<u32, Value>::new();
+        let mut block_id = entry;
+        let mut transitions = 0u32;
+        loop {
+            transitions = transitions.saturating_add(1);
+            if transitions > self.max_while {
+                return Err(ProgramError::WhileLimitExceeded(self.max_while));
+            }
+            let block = blocks.iter().find(|block| block.id == block_id).ok_or(ProgramError::BadControlFlow)?;
+            for instruction in &block.instructions {
+                match instruction {
+                    CfgInstruction::ConstF32 { result, value } => {
+                        values.insert(*result, Value::F32(*value));
+                    }
+                    CfgInstruction::ConstF64 { result, value } => {
+                        values.insert(*result, Value::F64(*value));
+                    }
+                    CfgInstruction::ConstU32 { result, value } => {
+                        values.insert(*result, Value::U32(*value));
+                    }
+                    CfgInstruction::LoadUniform { result, slot, .. } => {
+                        let value = self.uniforms.get(slot).cloned().ok_or(ProgramError::MissingUniform(*slot))?;
+                        values.insert(*result, value);
+                    }
+                    CfgInstruction::LoadBuffer { result, resource, index, .. } => {
+                        let index = value_index(values.get(index).cloned().ok_or_else(|| missing_ssa(*index))?)?;
+                        let buffer = self.buffers.get(resource).ok_or(ProgramError::MissingBuffer(*resource))?;
+                        let length = buffer.len();
+                        let value = buffer.get(index).cloned().ok_or(ProgramError::BufferOutOfBounds {
+                            resource: *resource,
+                            index,
+                            length,
+                        })?;
+                        values.insert(*result, value);
+                    }
+                    CfgInstruction::GlobalId { result } => {
+                        values.insert(*result, Value::U32(parallel.map(|instance| instance.global_id).unwrap_or(0)));
+                    }
+                    CfgInstruction::Binary { result, op, lhs, rhs } => {
+                        let lhs = values.get(lhs).cloned().ok_or_else(|| missing_ssa(*lhs))?;
+                        let rhs = values.get(rhs).cloned().ok_or_else(|| missing_ssa(*rhs))?;
+                        values.insert(*result, self.eval_binop(*op, lhs, rhs)?);
+                    }
+                    CfgInstruction::Unary { result, op, arg } => {
+                        let arg = values.get(arg).cloned().ok_or_else(|| missing_ssa(*arg))?;
+                        values.insert(*result, self.eval_unop(*op, arg)?);
+                    }
+                    CfgInstruction::Vec3Compose { result, x, y, z } => {
+                        let x = values.get(x).cloned().ok_or_else(|| missing_ssa(*x))?;
+                        let y = values.get(y).cloned().ok_or_else(|| missing_ssa(*y))?;
+                        let z = values.get(z).cloned().ok_or_else(|| missing_ssa(*z))?;
+                        values.insert(
+                            *result,
+                            Value::Vec3([
+                                x.as_f64().map_err(|_| type_mismatch("f64", &x))?,
+                                y.as_f64().map_err(|_| type_mismatch("f64", &y))?,
+                                z.as_f64().map_err(|_| type_mismatch("f64", &z))?,
+                            ]),
+                        );
+                    }
+                    CfgInstruction::Select { result, cond, then_, else_ } => {
+                        let condition = values.get(cond).cloned().ok_or_else(|| missing_ssa(*cond))?;
+                        let selected =
+                            if condition.as_bool().map_err(|_| type_mismatch("bool", &condition))? { then_ } else { else_ };
+                        values.insert(*result, values.get(selected).cloned().ok_or_else(|| missing_ssa(*selected))?);
+                    }
+                    CfgInstruction::StoreBuffer { resource, index, value } => {
+                        let index = value_index(values.get(index).cloned().ok_or_else(|| missing_ssa(*index))?)?;
+                        let value = values.get(value).cloned().ok_or_else(|| missing_ssa(*value))?;
+                        let buffer = self.buffers.get_mut(resource).ok_or(ProgramError::MissingBuffer(*resource))?;
+                        let length = buffer.len();
+                        *buffer.get_mut(index).ok_or(ProgramError::BufferOutOfBounds {
+                            resource: *resource,
+                            index,
+                            length,
+                        })? = value;
+                    }
+                }
+            }
+            match &block.terminator {
+                CfgTerminator::Return(value) => return values.get(value).cloned().ok_or_else(|| missing_ssa(*value)),
+                CfgTerminator::Branch { target, args } => {
+                    let target_block = blocks.iter().find(|candidate| candidate.id == *target).ok_or(ProgramError::BadControlFlow)?;
+                    bind_cfg_parameters(target_block, args, &mut values)?;
+                    block_id = *target;
+                }
+                CfgTerminator::ConditionalBranch { condition, then_block, then_args, else_block, else_args } => {
+                    let condition = values.get(condition).cloned().ok_or_else(|| missing_ssa(*condition))?;
+                    let (target, args) = if condition.as_bool().map_err(|_| type_mismatch("bool", &condition))? {
+                        (*then_block, then_args)
+                    } else {
+                        (*else_block, else_args)
+                    };
+                    let target_block = blocks.iter().find(|candidate| candidate.id == target).ok_or(ProgramError::BadControlFlow)?;
+                    bind_cfg_parameters(target_block, args, &mut values)?;
+                    block_id = target;
+                }
+            }
+            *loop_steps = loop_steps.saturating_add(1);
         }
     }
 
@@ -91,7 +220,7 @@ impl CpuInterpreter {
         loop_steps: &mut u32,
         parallel: Option<ParallelInstance>,
         in_loop: bool,
-    ) -> Result<Option<Value>, ProgramError> {
+    ) -> Result<Flow, ProgramError> {
         let mut idx = 0;
         while idx < body.len() {
             match &body[idx] {
@@ -103,27 +232,31 @@ impl CpuInterpreter {
                     let v = self.eval_expr(value, program, locals, parallel)?;
                     locals.insert(*id, v);
                 }
+                Stmt::StoreBuffer { resource, index, value } => {
+                    let index = value_index(self.eval_expr(index, program, locals, parallel)?)?;
+                    let value = self.eval_expr(value, program, locals, parallel)?;
+                    let buffer = self.buffers.get_mut(resource).ok_or(ProgramError::MissingBuffer(*resource))?;
+                    let length = buffer.len();
+                    let slot =
+                        buffer.get_mut(index).ok_or(ProgramError::BufferOutOfBounds { resource: *resource, index, length })?;
+                    *slot = value;
+                }
                 Stmt::If { cond, then_body, else_body } => {
                     let c = self.eval_expr(cond, program, locals, parallel)?;
-                    let branch = if c.as_bool().map_err(|_| type_mismatch("bool", &c))? {
-                        then_body
-                    } else {
-                        else_body
-                    };
-                    if let Some(v) =
-                        self.exec_stmts(branch, program, locals, loop_steps, parallel, in_loop)?
-                    {
-                        return Ok(Some(v));
+                    let branch = if c.as_bool().map_err(|_| type_mismatch("bool", &c))? { then_body } else { else_body };
+                    match self.exec_stmts(branch, program, locals, loop_steps, parallel, in_loop)? {
+                        Flow::Next => {}
+                        flow => return Ok(flow),
                     }
                 }
                 Stmt::For { iter, limit, body } => {
                     for step in 0..*limit {
                         *loop_steps += 1;
                         locals.insert(*iter, Value::U32(step));
-                        if let Some(v) =
-                            self.exec_stmts(body, program, locals, loop_steps, parallel, true)?
-                        {
-                            return Ok(Some(v));
+                        match self.exec_stmts(body, program, locals, loop_steps, parallel, true)? {
+                            Flow::Next | Flow::Continue => {}
+                            Flow::Break => break,
+                            Flow::Return(v) => return Ok(Flow::Return(v)),
                         }
                     }
                 }
@@ -137,10 +270,10 @@ impl CpuInterpreter {
                         if step + 1 > self.max_while {
                             return Err(ProgramError::WhileLimitExceeded(self.max_while));
                         }
-                        if let Some(v) =
-                            self.exec_stmts(body, program, locals, loop_steps, parallel, true)?
-                        {
-                            return Ok(Some(v));
+                        match self.exec_stmts(body, program, locals, loop_steps, parallel, true)? {
+                            Flow::Next | Flow::Continue => {}
+                            Flow::Break => break,
+                            Flow::Return(v) => return Ok(Flow::Return(v)),
                         }
                     }
                 }
@@ -148,25 +281,27 @@ impl CpuInterpreter {
                     if !in_loop {
                         return Err(ProgramError::BadControlFlow);
                     }
-                    return Ok(None);
+                    return Ok(Flow::Break);
                 }
                 Stmt::Continue => {
                     if !in_loop {
                         return Err(ProgramError::BadControlFlow);
                     }
-                    idx += 1;
-                    continue;
+                    return Ok(Flow::Continue);
                 }
                 Stmt::Return(expr) => {
-                    return Ok(Some(self.eval_expr(expr, program, locals, parallel)?));
+                    return Ok(Flow::Return(self.eval_expr(expr, program, locals, parallel)?));
                 }
                 Stmt::Expr(expr) => {
                     self.eval_expr(expr, program, locals, parallel)?;
                 }
+                Stmt::Cfg { .. } => {
+                    return Err(ProgramError::UnsupportedOp("nested CFG statement".into()));
+                }
             }
             idx += 1;
         }
-        Ok(None)
+        Ok(Flow::Next)
     }
 
     fn eval_expr(
@@ -184,15 +319,14 @@ impl CpuInterpreter {
             Expr::LoadLocal(id) => locals
                 .get(id)
                 .cloned()
-                .ok_or(ProgramError::TypeMismatch {
-                    expected: format!("local {}", id),
-                    actual: "missing".into(),
-                }),
-            Expr::LoadUniform(slot) => self
-                .uniforms
-                .get(slot)
-                .cloned()
-                .ok_or(ProgramError::MissingUniform(*slot)),
+                .ok_or(ProgramError::TypeMismatch { expected: format!("local {}", id), actual: "missing".into() }),
+            Expr::LoadUniform(slot) => self.uniforms.get(slot).cloned().ok_or(ProgramError::MissingUniform(*slot)),
+            Expr::LoadBuffer { resource, index } => {
+                let index = value_index(self.eval_expr(index, program, locals, parallel)?)?;
+                let buffer = self.buffers.get(resource).ok_or(ProgramError::MissingBuffer(*resource))?;
+                let length = buffer.len();
+                buffer.get(index).cloned().ok_or(ProgramError::BufferOutOfBounds { resource: *resource, index, length })
+            }
             Expr::GlobalId => Ok(Value::U32(parallel.map(|p| p.global_id).unwrap_or(0))),
             Expr::BinOp { op, lhs, rhs } => {
                 let l = self.eval_expr(lhs, program, locals, parallel)?;
@@ -223,10 +357,7 @@ impl CpuInterpreter {
             }
             Expr::Call { func, args } => {
                 let fn_idx = *func as usize;
-                let callee = program
-                    .functions
-                    .get(fn_idx)
-                    .ok_or(ProgramError::UnknownFunction(*func))?;
+                let callee = program.functions.get(fn_idx).ok_or(ProgramError::UnknownFunction(*func))?;
                 let mut call_locals = HashMap::new();
                 for ((param_id, _), arg_expr) in callee.params.iter().zip(args.iter()) {
                     let v = self.eval_expr(arg_expr, program, locals, parallel)?;
@@ -348,6 +479,7 @@ impl CpuInterpreter {
             UnOp::Atan => Ok(Value::F64(v.as_f64().map_err(|_| ProgramError::UnsupportedOp("atan".into()))?.atan())),
             UnOp::Abs => Ok(Value::F64(v.as_f64().map_err(|_| ProgramError::UnsupportedOp("abs".into()))?.abs())),
             UnOp::Ln => Ok(Value::F64(v.as_f64().map_err(|_| ProgramError::UnsupportedOp("ln".into()))?.ln())),
+            UnOp::IsFinite => Ok(Value::Bool(v.as_f64().map_err(|_| ProgramError::UnsupportedOp("is_finite".into()))?.is_finite())),
             UnOp::Vec3Comp(axis) => {
                 let a = v.as_vec3().map_err(|_| ProgramError::UnsupportedOp("vec3comp".into()))?;
                 let idx = axis as usize;
@@ -375,8 +507,36 @@ impl CpuInterpreter {
 use crate::error::ValidateError;
 
 fn type_mismatch(expected: &str, actual: &Value) -> ProgramError {
-    ProgramError::TypeMismatch {
-        expected: expected.into(),
-        actual: actual.type_name().into(),
+    ProgramError::TypeMismatch { expected: expected.into(), actual: actual.type_name().into() }
+}
+
+fn missing_ssa(id: u32) -> ProgramError {
+    ProgramError::TypeMismatch { expected: format!("ssa value {id}"), actual: "missing".into() }
+}
+
+fn bind_cfg_parameters(
+    block: &crate::CfgBlock,
+    args: &[u32],
+    values: &mut HashMap<u32, Value>,
+) -> Result<(), ProgramError> {
+    if block.parameters.len() != args.len() {
+        return Err(ProgramError::BadControlFlow);
+    }
+    let incoming = args
+        .iter()
+        .map(|argument| values.get(argument).cloned().ok_or_else(|| missing_ssa(*argument)))
+        .collect::<Result<Vec<_>, _>>()?;
+    for (parameter, value) in block.parameters.iter().zip(incoming) {
+        values.insert(parameter.value, value);
+    }
+    Ok(())
+}
+
+fn value_index(value: Value) -> Result<usize, ProgramError> {
+    match value {
+        Value::U32(index) => Ok(index as usize),
+        Value::F64(index) if index.is_finite() && index >= 0.0 && index.fract() == 0.0 => Ok(index as usize),
+        Value::F32(index) if index.is_finite() && index >= 0.0 && index.fract() == 0.0 => Ok(index as usize),
+        other => Err(type_mismatch("non-negative integer index", &other)),
     }
 }

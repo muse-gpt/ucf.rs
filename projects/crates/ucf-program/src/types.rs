@@ -17,14 +17,8 @@ pub enum Ty {
     Vec2,
     Vec3,
     Vec4,
-    Array {
-        elem: Box<Ty>,
-        len: u32,
-    },
-    Struct {
-        name: String,
-        fields: Vec<(String, Ty)>,
-    },
+    Array { elem: Box<Ty>, len: u32 },
+    Struct { name: String, fields: Vec<(String, Ty)> },
 }
 
 impl Ty {

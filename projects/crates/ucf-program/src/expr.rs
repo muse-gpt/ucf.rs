@@ -32,6 +32,8 @@ pub enum UnOp {
     Normalize,
     Abs,
     Ln,
+    /// 判断标量是否既不是 NaN 也不是无穷大。
+    IsFinite,
     /// 取向量分量：0=x，1=y，2=z。
     Vec3Comp(u8),
 }
@@ -47,6 +49,11 @@ pub enum Expr {
     LoadLocal(u32),
     /// Uniform 槽位（内核绑定期填入）。
     LoadUniform(u32),
+    /// 从逻辑资源 buffer 读取一个元素。
+    LoadBuffer {
+        resource: u32,
+        index: Box<Expr>,
+    },
     /// 并行实例全局索引（L2）。
     GlobalId,
     BinOp {

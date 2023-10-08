@@ -11,6 +11,14 @@ pub enum ValidateError {
     LoopLimitExceeded { name: String, limit: u32, max: u32 },
     #[error("function `{name}` references unknown local {id}")]
     UnknownLocal { name: String, id: u32 },
+    #[error("function `{name}` references unknown function {index}")]
+    UnknownFunction { name: String, index: u32 },
+    #[error("function `{name}` call to {index} expects {expected} arguments, got {actual}")]
+    CallArity { name: String, index: u32, expected: usize, actual: usize },
+    #[error("function `{name}` uses break or continue outside a loop")]
+    BadControlFlow { name: String },
+    #[error("recursive function call detected at function {index}")]
+    RecursiveCall { index: u32 },
 }
 
 /// CPU 解释执行错误。
@@ -34,4 +42,8 @@ pub enum ProgramError {
     WhileLimitExceeded(u32),
     #[error("uniform slot {0} missing")]
     MissingUniform(u32),
+    #[error("resource buffer {0} is missing")]
+    MissingBuffer(u32),
+    #[error("resource buffer {resource} index {index} is out of bounds for length {length}")]
+    BufferOutOfBounds { resource: u32, index: usize, length: usize },
 }

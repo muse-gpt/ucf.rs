@@ -148,6 +148,38 @@ impl StructuredFunctionBuilder {
         self.body.push(Stmt::StoreBuffer { resource, index, value });
     }
 
+    /// 构造常量表达式。
+    pub fn const_f32(&self, value: f32) -> Expr { Expr::ConstF32(value) }
+
+    /// 构造无符号整数常量表达式。
+    pub fn const_u32(&self, value: u32) -> Expr { Expr::ConstU32(value) }
+
+    /// 构造 uniform 读取表达式。
+    pub fn load_uniform(&self, slot: u32) -> Expr { Expr::LoadUniform(slot) }
+
+    /// 构造并行实例索引表达式。
+    pub fn global_id(&self) -> Expr { Expr::GlobalId }
+
+    /// 构造 buffer 读取表达式。
+    pub fn load_buffer(&self, resource: u32, index: Expr) -> Expr {
+        Expr::LoadBuffer { resource, index: Box::new(index) }
+    }
+
+    /// 构造二元表达式。
+    pub fn binary(&self, op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
+        Expr::BinOp { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }
+    }
+
+    /// 构造一元表达式。
+    pub fn unary(&self, op: UnOp, arg: Expr) -> Expr {
+        Expr::UnOp { op, arg: Box::new(arg) }
+    }
+
+    /// 构造条件选择表达式。
+    pub fn select(&self, cond: Expr, then_: Expr, else_: Expr) -> Expr {
+        Expr::Select { cond: Box::new(cond), then_: Box::new(then_), else_: Box::new(else_) }
+    }
+
     /// 添加返回表达式并完成函数。
     pub fn finish(mut self, ret: Ty, value: Expr) -> Function {
         self.body.push(Stmt::Return(value));
@@ -703,5 +735,18 @@ mod tests {
             .expect("valid structured program");
         let result = CpuInterpreter::new().run(&program).expect("CPU structured loop");
         assert_eq!(result.value, Value::F64(6.0));
+    }
+
+    #[test]
+    fn cpu_is_finite_distinguishes_nan_infinity_and_regular_values() {
+        let mut function = StructuredFunctionBuilder::new("is_finite");
+        let input = function.let_value(Ty::f32(), Expr::LoadUniform(0));
+        let finite = Expr::UnOp { op: UnOp::IsFinite, arg: Box::new(Expr::LoadLocal(input)) };
+        let result = Expr::Select { cond: Box::new(finite), then_: Box::new(Expr::ConstF32(1.0)), else_: Box::new(Expr::ConstF32(0.0)) };
+        let program = ProgramBuilder::new().structured_entry(function, Ty::f32(), result).expect("is finite entry").finish().expect("valid is finite program");
+        for (value, expected) in [(Value::F32(1.0), 1.0), (Value::F32(f32::NAN), 0.0), (Value::F32(f32::INFINITY), 0.0)] {
+            let result = CpuInterpreter::new().with_uniform(0, value).run(&program).expect("CPU is finite execution");
+            assert_eq!(result.value, Value::F32(expected));
+        }
     }
 }

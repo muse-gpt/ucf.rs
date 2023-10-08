@@ -43,4 +43,10 @@ pub enum ParamValue {
     I64(i64),
     F64(f64),
     Str(String),
+    /// 序列化的通用 UCF 程序正文及其绑定指纹。
+    Program {
+        version: u32,
+        hash: u64,
+        body: String,
+    },
 }
