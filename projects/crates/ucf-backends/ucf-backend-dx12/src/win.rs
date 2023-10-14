@@ -584,7 +584,7 @@ impl Dx12Backend {
             ))));
         }
         let count = (bytes / 4) as u32;
-        let program = program_from_task(task);
+        let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
         let dxbc = emit_dxil(&program).map_err(map_emit_err)?;
         self.mark_pipeline_path();
         let (root, pso) = self.create_fill_pso(&dxbc)?;
@@ -646,7 +646,7 @@ impl Dx12Backend {
         expect_bytes(b, self.buf_bytes(b)?, (k as usize) * (n as usize) * 4)?;
         expect_bytes(out, self.buf_bytes(out)?, (m as usize) * (n as usize) * 4)?;
 
-        let program = program_from_task(task);
+        let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
         let dxbc = emit_dxil(&program).map_err(map_emit_err)?;
         self.mark_pipeline_path();
         let (root, pso) = self.create_matmul_pso(&dxbc)?;

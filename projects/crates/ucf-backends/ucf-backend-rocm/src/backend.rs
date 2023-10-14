@@ -288,7 +288,7 @@ impl RocmBackend {
                         ))));
                     }
                     let count = (bytes / 4) as u32;
-                    let program = program_from_task(task);
+                    let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
                     let hsaco = match emit_hsaco(&program) {
                         Ok(h) => h,
                         Err(err) => {
@@ -400,7 +400,7 @@ impl RocmBackend {
                         unload_ops(&self.driver, &ops);
                         return Err(err);
                     }
-                    let program = program_from_task(task);
+                    let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
                     let hsaco = match emit_hsaco(&program) {
                         Ok(h) => h,
                         Err(err) => {
@@ -571,7 +571,7 @@ impl RocmBackend {
             ))));
         }
         let count = (bytes / 4) as u32;
-        let program = program_from_task(task);
+        let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
         let hsaco = emit_hsaco(&program).map_err(map_emit_err)?;
         let (_module, func) = self.cached_kernel(&hsaco, &program.entry)?;
         self.driver
@@ -593,7 +593,7 @@ impl RocmBackend {
         expect_bytes(b, b_bytes, (k as usize) * (n as usize) * 4)?;
         expect_bytes(out, out_bytes, (m as usize) * (n as usize) * 4)?;
 
-        let program = program_from_task(task);
+        let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
         let hsaco = emit_hsaco(&program).map_err(map_emit_err)?;
         let (_module, func) = self.cached_kernel(&hsaco, &program.entry)?;
         self.driver
@@ -627,7 +627,7 @@ impl RocmBackend {
         expect_bytes(v, v_bytes, need)?;
         expect_bytes(out, out_bytes, need)?;
 
-        let program = program_from_task(task);
+        let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
         let hsaco = emit_hsaco(&program).map_err(map_emit_err)?;
         let (_module, func) = self.cached_kernel(&hsaco, &program.entry)?;
         self.driver

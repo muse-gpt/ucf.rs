@@ -442,7 +442,7 @@ impl CudaBackend {
                         ))));
                     }
                     let count = (bytes / 4) as u32;
-                    let program = program_from_task(task);
+                    let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
                     let ptx = match emit_ptx(&program) {
                         Ok(p) => p,
                         Err(err) => {
@@ -554,7 +554,7 @@ impl CudaBackend {
                         unload_ops(&self.driver, &ops);
                         return Err(err);
                     }
-                    let program = program_from_task(task);
+                    let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
                     let ptx = match emit_ptx(&program) {
                         Ok(p) => p,
                         Err(err) => {
@@ -920,7 +920,7 @@ impl CudaBackend {
             ))));
         }
         let count = (bytes / 4) as u32;
-        let program = program_from_task(task);
+        let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
         let ptx = emit_ptx(&program).map_err(map_emit_err)?;
         let (_module, func) = self.cached_kernel(&ptx, &program.entry)?;
         self.driver
@@ -942,7 +942,7 @@ impl CudaBackend {
         expect_bytes(b, b_bytes, (k as usize) * (n as usize) * 4)?;
         expect_bytes(out, out_bytes, (m as usize) * (n as usize) * 4)?;
 
-        let program = program_from_task(task);
+        let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
         let ptx = emit_ptx(&program).map_err(map_emit_err)?;
         let (_module, func) = self.cached_kernel(&ptx, &program.entry)?;
         self.driver
@@ -969,7 +969,7 @@ impl CudaBackend {
         expect_bytes(src, src_bytes, need)?;
         expect_bytes(out, out_bytes, need)?;
 
-        let program = program_from_task(task);
+        let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
         let ptx = emit_ptx(&program).map_err(map_emit_err)?;
         let (_module, func) = self.cached_kernel(&ptx, &program.entry)?;
         self.driver
@@ -1003,7 +1003,7 @@ impl CudaBackend {
         expect_bytes(v, v_bytes, need)?;
         expect_bytes(out, out_bytes, need)?;
 
-        let program = program_from_task(task);
+        let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
         let ptx = emit_ptx(&program).map_err(map_emit_err)?;
         let (_module, func) = self.cached_kernel(&ptx, &program.entry)?;
         self.driver

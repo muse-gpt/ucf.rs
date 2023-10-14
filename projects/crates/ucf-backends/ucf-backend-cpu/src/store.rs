@@ -84,6 +84,25 @@ impl HostStore {
         }
         Ok(())
     }
+
+    /// Overwrite the beginning of a buffer with little-endian `f32` values.
+    pub fn write_f32_prefix(&mut self, id: ResourceId, values: &[f32]) -> Result<(), BackendError> {
+        let bytes = self.bytes_mut(id)?;
+        let need = values.len().checked_mul(4).ok_or_else(|| {
+            BackendError("f32 prefix byte length overflow".into())
+        })?;
+        if need > bytes.len() {
+            return Err(BackendError(format!(
+                "resource {} has {} bytes, insufficient for {need}-byte f32 prefix",
+                id.0,
+                bytes.len()
+            )));
+        }
+        for (slot, value) in bytes[..need].chunks_exact_mut(4).zip(values.iter()) {
+            slot.copy_from_slice(&value.to_le_bytes());
+        }
+        Ok(())
+    }
 }
 
 /// Shared handle so callers can seed and read back while the backend is owned by [`ucf_runtime::Runtime`].

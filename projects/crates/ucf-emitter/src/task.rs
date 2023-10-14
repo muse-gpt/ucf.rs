@@ -7,7 +7,18 @@ pub enum ProgramLowerError {
     UnsupportedCustomOp { name: String },
 }
 
-/// 严格 lowering；黑洞等领域 `ton_*` 自定义算子在此必须失败。
+impl std::fmt::Display for ProgramLowerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsupportedTaskKind { kind } => write!(f, "unsupported task kind: {kind}"),
+            Self::UnsupportedCustomOp { name } => write!(f, "unsupported custom op: {name}"),
+        }
+    }
+}
+
+impl std::error::Error for ProgramLowerError {}
+
+/// 严格 lowering。未知领域自定义算子必须失败。
 pub fn try_program_from_task(task: &TaskNode) -> Result<ShaderProgram, ProgramLowerError> {
     match &task.kind {
         TaskKind::Copy => Ok(ShaderProgram::mem_copy("ucf_copy")),
@@ -43,16 +54,9 @@ pub fn try_program_from_task(task: &TaskNode) -> Result<ShaderProgram, ProgramLo
 
 /// Build a backend-facing [`ShaderProgram`] from a task node.
 ///
-/// 遗留路径：未知 `Custom` 仍映射为占位 Fill（待后端全面改用 `try_program_from_task`）。
-/// `Raster` / `RtTrace` 同理为占位，图形后端消费 present 参数而非此处 kernel。
-pub fn program_from_task(task: &TaskNode) -> ShaderProgram {
-    match try_program_from_task(task) {
-        Ok(p) => p,
-        Err(ProgramLowerError::UnsupportedCustomOp { .. })
-        | Err(ProgramLowerError::UnsupportedTaskKind { kind: _ }) => {
-            ShaderProgram::dispatch_fill("ucf_dispatch", 1.0)
-        }
-    }
+/// Lower a task strictly. Unsupported tasks return an explicit error.
+pub fn program_from_task(task: &TaskNode) -> Result<ShaderProgram, ProgramLowerError> {
+    try_program_from_task(task)
 }
 
 /// Whether the program needs a device kernel (vs memcpy-only).

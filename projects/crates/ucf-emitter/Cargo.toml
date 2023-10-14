@@ -12,6 +12,7 @@ publish.workspace = true
 libloading = { workspace = true }
 naga = { workspace = true }
 ucf-types = { workspace = true }
+ucf-program = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }

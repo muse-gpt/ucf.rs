@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use ash::vk;
 use ash::{Device, Entry, Instance};
 use ucf_capability::{Feature, FeatureSet, WiredStrategies};
-use ucf_emitter::{emit_raster_tri_spirv, emit_spirv, program_from_task};
+use ucf_emitter::{emit_program_spirv, emit_raster_tri_spirv, emit_spirv, program_from_task};
 use ucf_ir::{Graph, TaskKind, TaskNode};
 use ucf_scheduler::{Backend, Error as SchedulerError, Result};
-use ucf_types::ResourceId;
+use ucf_types::{Dispatch, ParamValue, ResourceId};
+use ucf_program::{program_hash, Program};
 
 use crate::params::{f32_param, resource_param, str_param, u32_param, BackendError};
 
@@ -413,7 +414,7 @@ impl VulkanBackend {
             ))));
         }
         let count = (bytes / 4) as u32;
-        let program = program_from_task(task);
+        let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
         let spirv = emit_spirv(&program).map_err(map_emit_err)?;
         let dst_buf = self.buffers.get(&dst).unwrap().buffer;
         self.dispatch_compute(
@@ -436,7 +437,7 @@ impl VulkanBackend {
         expect_bytes(b, self.buf_bytes(b)?, (k as usize) * (n as usize) * 4)?;
         expect_bytes(out, self.buf_bytes(out)?, (m as usize) * (n as usize) * 4)?;
 
-        let program = program_from_task(task);
+        let program = program_from_task(task).map_err(|err| map_emit_err(err.to_string()))?;
         let spirv = emit_spirv(&program).map_err(map_emit_err)?;
         let a_buf = self.buffers.get(&a).unwrap().buffer;
         let b_buf = self.buffers.get(&b).unwrap().buffer;
@@ -451,6 +452,106 @@ impl VulkanBackend {
             &[a_buf, b_buf, out_buf],
             &push,
             (m * n).div_ceil(64).max(1),
+        )
+    }
+
+    fn run_program_task(&mut self, task: &TaskNode) -> Result<()> {
+        let (version, expected_hash, body) = match task.params.get("program") {
+            Some(ParamValue::Program { version, hash, body }) => (*version, *hash, body),
+            _ => return Err(map_backend_err(BackendError(
+                "Dispatch requires a serialized generic UCF program".into(),
+            ))),
+        };
+        if version != 1 {
+            return Err(map_backend_err(BackendError(format!(
+                "unsupported generic UCF program version {version}"
+            ))));
+        }
+        let program: Program = serde_json::from_str(body).map_err(|e| {
+            map_backend_err(BackendError(format!("invalid generic UCF program body: {e}")))
+        })?;
+        let actual_hash = program_hash(&program);
+        if actual_hash != expected_hash {
+            return Err(map_backend_err(BackendError(format!(
+                "generic UCF program hash mismatch: expected {expected_hash}, got {actual_hash}"
+            ))));
+        }
+        let output = resource_param(task, "output").map_err(map_backend_err)?;
+        let bytes = self.buf_bytes(output)?;
+        if bytes == 0 || bytes % 4 != 0 {
+            return Err(map_backend_err(BackendError(format!(
+                "generic UCF output resource {} must contain f32 elements",
+                output.0
+            ))));
+        }
+        let output_count = u32::try_from(bytes / 4).map_err(|_| {
+            map_backend_err(BackendError("generic UCF output element count exceeds u32".into()))
+        })?;
+        let dispatch_count = match task.dispatch {
+            Dispatch::Explicit { x, y, z } => x
+                .checked_mul(y)
+                .and_then(|value| value.checked_mul(z))
+                .ok_or_else(|| map_backend_err(BackendError("generic UCF dispatch dimensions overflow".into())))?,
+            Dispatch::Auto => {
+                return Err(map_backend_err(BackendError(
+                    "generic UCF dispatch requires explicit dimensions".into(),
+                )))
+            }
+        };
+        if dispatch_count > output_count {
+            return Err(map_backend_err(BackendError(format!(
+                "generic UCF dispatch count {dispatch_count} exceeds output capacity {output_count}"
+            ))));
+        }
+        let max_resource = program
+            .functions
+            .iter()
+            .flat_map(|function| function.body.iter())
+            .map(ucf_program_resource_slots)
+            .collect::<std::result::Result<Vec<_>, BackendError>>()
+            .map_err(map_backend_err)?
+            .into_iter()
+            .flatten()
+            .max();
+        let mut dispatch_buffers = vec![self.buffers.get(&output).unwrap().buffer];
+        if let Some(max_resource) = max_resource {
+            for slot in 0..=max_resource {
+                let key = format!("buffer_{slot}");
+                let resource = match task.params.get(&key) {
+                    Some(ParamValue::I64(value)) if *value >= 0 => ResourceId(*value as u64),
+                    Some(_) => return Err(map_backend_err(BackendError(format!("{key} must be a non-negative resource id")))),
+                    None => return Err(map_backend_err(BackendError(format!("generic UCF program requires {key}")))),
+                };
+                let buffer = self.buffers.get(&resource).ok_or_else(|| {
+                    map_backend_err(BackendError(format!("generic UCF input resource {} is not allocated", resource.0)))
+                })?;
+                dispatch_buffers.push(buffer.buffer);
+            }
+        }
+        let spirv = emit_program_spirv(&program, "ucf_program_main")
+            .map_err(|e| map_emit_err(e.to_string()))?;
+        let mut push = [0u8; 68];
+        push[0..4].copy_from_slice(&dispatch_count.to_ne_bytes());
+        for slot in 0..16u32 {
+            if let Some(value) = task.params.get(&format!("uniform_{slot}")) {
+                let value = match value {
+                    ParamValue::F64(value) => *value as f32,
+                    ParamValue::I64(value) => *value as f32,
+                    _ => return Err(map_backend_err(BackendError(format!(
+                        "uniform_{slot} must be numeric"
+                    )))),
+                };
+                let offset = 4 + (slot as usize) * 4;
+                push[offset..offset + 4]
+                    .copy_from_slice(&value.to_ne_bytes());
+            }
+        }
+        self.dispatch_compute(
+            &spirv,
+            "ucf_program_main",
+            &dispatch_buffers,
+            &push,
+            dispatch_count.div_ceil(64).max(1),
         )
     }
 
@@ -1031,6 +1132,57 @@ impl VulkanBackend {
     }
 }
 
+fn ucf_program_resource_slots(stmt: &ucf_program::Stmt) -> std::result::Result<Vec<u32>, BackendError> {
+    fn expr_slots(expr: &ucf_program::Expr, slots: &mut Vec<u32>) {
+        match expr {
+            ucf_program::Expr::LoadBuffer { resource, index } => {
+                slots.push(*resource);
+                expr_slots(index, slots);
+            }
+            ucf_program::Expr::BinOp { lhs, rhs, .. } => { expr_slots(lhs, slots); expr_slots(rhs, slots); }
+            ucf_program::Expr::UnOp { arg, .. } => expr_slots(arg, slots),
+            ucf_program::Expr::Select { cond, then_, else_ } => {
+                expr_slots(cond, slots); expr_slots(then_, slots); expr_slots(else_, slots);
+            }
+            ucf_program::Expr::Vec3Compose { x, y, z } => {
+                expr_slots(x, slots); expr_slots(y, slots); expr_slots(z, slots);
+            }
+            ucf_program::Expr::Call { args, .. } => for arg in args { expr_slots(arg, slots); },
+            _ => {}
+        }
+    }
+    let mut slots = Vec::new();
+    match stmt {
+        ucf_program::Stmt::Let { init, .. }
+        | ucf_program::Stmt::StoreLocal { value: init, .. }
+        | ucf_program::Stmt::Return(init)
+        | ucf_program::Stmt::Expr(init) => expr_slots(init, &mut slots),
+        ucf_program::Stmt::StoreBuffer { resource, index, value } => {
+            slots.push(*resource); expr_slots(index, &mut slots); expr_slots(value, &mut slots);
+        }
+        ucf_program::Stmt::If { cond, then_body, else_body } => {
+            expr_slots(cond, &mut slots);
+            for nested in then_body.iter().chain(else_body) { slots.extend(ucf_program_resource_slots(nested)?); }
+        }
+        ucf_program::Stmt::For { body, .. } | ucf_program::Stmt::While { body, .. } => {
+            for nested in body { slots.extend(ucf_program_resource_slots(nested)?); }
+        }
+        ucf_program::Stmt::Break | ucf_program::Stmt::Continue => {}
+        ucf_program::Stmt::Cfg { blocks, .. } => {
+            for block in blocks {
+                for instruction in &block.instructions {
+                    match instruction {
+                        ucf_program::CfgInstruction::LoadBuffer { resource, .. }
+                        | ucf_program::CfgInstruction::StoreBuffer { resource, .. } => slots.push(*resource),
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    Ok(slots)
+}
+
 impl Drop for VulkanBackend {
     fn drop(&mut self) {
         unsafe {
@@ -1103,6 +1255,7 @@ impl Backend for VulkanBackend {
             TaskKind::Copy => self.run_copy(task),
             TaskKind::Fill => self.run_fill(task),
             TaskKind::MatMul => self.run_matmul(task),
+            TaskKind::Dispatch => self.run_program_task(task),
             TaskKind::Raster => self.run_raster(task),
             TaskKind::RtTrace => Err(map_backend_err(BackendError(
                 "ray tracing is not in the vulkan thin gate".into(),

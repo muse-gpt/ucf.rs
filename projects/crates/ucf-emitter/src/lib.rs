@@ -1,14 +1,16 @@
-//! Built-in shader emitter: UCF `ShaderProgram` → PTX / DXBC / SPIR-V / HSACO bytes.
+//! UCF program and legacy shader operation emitters.
 #![warn(missing_docs)]
 
 mod dxil;
 mod hip;
+mod program_spirv;
 mod ptx;
 mod spirv;
 mod task;
 
 pub use dxil::{emit_dxil, emit_raster_tri_dxbc, RasterTriDxbc};
 pub use hip::{emit_hip, emit_hsaco};
+pub use program_spirv::{emit_program_spirv, ProgramSpirvError};
 pub use ptx::emit_ptx;
 pub use spirv::{emit_raster_tri_spirv, emit_spirv, RasterTriSpirv};
 pub use task::{needs_kernel, program_from_task, try_program_from_task, ProgramLowerError};

@@ -12,9 +12,11 @@ publish.workspace = true
 ash = { workspace = true }
 ucf-capability = { workspace = true }
 ucf-emitter = { workspace = true }
+ucf-program = { workspace = true }
 ucf-ir = { workspace = true }
 ucf-scheduler = { workspace = true }
 ucf-types = { workspace = true }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 ucf-backend-cpu = { workspace = true }
