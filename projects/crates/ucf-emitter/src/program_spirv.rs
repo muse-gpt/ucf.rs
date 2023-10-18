@@ -53,6 +53,10 @@ pub fn emit_program_spirv(program: &Program, entry: &str) -> Result<Vec<u8>, Pro
         name: Some("ucf_f32".into()),
         inner: TypeInner::Scalar(Scalar { kind: ScalarKind::Float, width: 4 }),
     }, naga::Span::UNDEFINED);
+    let vec3_ty = module.types.insert(Type {
+        name: Some("ucf_vec3".into()),
+        inner: TypeInner::Vector { size: VectorSize::Tri, scalar: Scalar { kind: ScalarKind::Float, width: 4 } },
+    }, naga::Span::UNDEFINED);
     let gid_ty = module.types.insert(Type {
         name: Some("ucf_gid".into()),
         inner: TypeInner::Vector { size: VectorSize::Tri, scalar: Scalar { kind: ScalarKind::Uint, width: 4 } },
@@ -173,7 +177,7 @@ pub fn emit_program_spirv(program: &Program, entry: &str) -> Result<Vec<u8>, Pro
     let result = {
         let locals = std::collections::BTreeMap::new();
         let emitted_count = function_ir.expressions.len();
-        let mut lower = Lowerer { function: &mut function_ir, f32_ty, u32_ty: push_u32_ty, bool_ty, gid_x, in_bounds, uniform_global: Some(uniform_global), buffer_globals, locals, emitted_count };
+        let mut lower = Lowerer { function: &mut function_ir, f32_ty, vec3_ty, u32_ty: push_u32_ty, bool_ty, gid_x, in_bounds, uniform_global: Some(uniform_global), buffer_globals, locals, emitted_count };
         let result = lower.lower_statements(function)?;
         lower.emit_pending();
         result
@@ -216,6 +220,7 @@ pub fn emit_program_spirv(program: &Program, entry: &str) -> Result<Vec<u8>, Pro
 struct Lowerer<'a> {
     function: &'a mut Function,
     f32_ty: naga::Handle<Type>,
+    vec3_ty: naga::Handle<Type>,
     u32_ty: naga::Handle<Type>,
     bool_ty: naga::Handle<Type>,
     gid_x: naga::Handle<Expression>,
@@ -258,6 +263,7 @@ impl<'a> Lowerer<'a> {
                 Stmt::Let { id, ty, init } => {
                     let local_ty = match ty {
                         Ty::Scalar(ucf_program::ScalarTy::F32) => self.f32_ty,
+                        Ty::Vec3 => self.vec3_ty,
                         Ty::Scalar(ucf_program::ScalarTy::U32) => self.u32_ty,
                         Ty::Scalar(ucf_program::ScalarTy::Bool) => self.bool_ty,
                         other => return Err(ProgramSpirvError::UnsupportedType(format!("local {other:?}"))),
@@ -502,6 +508,7 @@ impl<'a> Lowerer<'a> {
                     BinOp::Sub => Expression::Binary { op: BinaryOperator::Subtract, left, right },
                     BinOp::Mul => Expression::Binary { op: BinaryOperator::Multiply, left, right },
                     BinOp::Div => Expression::Binary { op: BinaryOperator::Divide, left, right },
+                    BinOp::Pow => Expression::Math { fun: MathFunction::Pow, arg: left, arg1: Some(right), arg2: None, arg3: None },
                     BinOp::Lt => Expression::Binary { op: BinaryOperator::Less, left, right },
                     BinOp::Le => Expression::Binary { op: BinaryOperator::LessEqual, left, right },
                     BinOp::Eq => Expression::Binary { op: BinaryOperator::Equal, left, right },
@@ -528,6 +535,7 @@ impl<'a> Lowerer<'a> {
                     UnOp::Atan => self.function.expressions.append(Expression::Math { fun: MathFunction::Atan, arg, arg1: None, arg2: None, arg3: None }, span),
                     UnOp::Abs => self.function.expressions.append(Expression::Math { fun: MathFunction::Abs, arg, arg1: None, arg2: None, arg3: None }, span),
                     UnOp::Ln => self.function.expressions.append(Expression::Math { fun: MathFunction::Log, arg, arg1: None, arg2: None, arg3: None }, span),
+                    UnOp::Vec3Comp(index) => self.function.expressions.append(Expression::AccessIndex { base: arg, index: *index as u32 }, span),
                     UnOp::IsFinite => {
                         let same = self.function.expressions.append(Expression::Binary { op: BinaryOperator::Equal, left: arg, right: arg }, span);
                         let abs = self.function.expressions.append(Expression::Math { fun: MathFunction::Abs, arg, arg1: None, arg2: None, arg3: None }, span);
@@ -592,6 +600,7 @@ impl<'a> Lowerer<'a> {
                     BinOp::Sub => Expression::Binary { op: BinaryOperator::Subtract, left, right },
                     BinOp::Mul => Expression::Binary { op: BinaryOperator::Multiply, left, right },
                     BinOp::Div => Expression::Binary { op: BinaryOperator::Divide, left, right },
+                    BinOp::Pow => Expression::Math { fun: MathFunction::Pow, arg: left, arg1: Some(right), arg2: None, arg3: None },
                     BinOp::Lt => Expression::Binary { op: BinaryOperator::Less, left, right },
                     BinOp::Le => Expression::Binary { op: BinaryOperator::LessEqual, left, right },
                     BinOp::Eq => Expression::Binary { op: BinaryOperator::Equal, left, right },
@@ -601,6 +610,12 @@ impl<'a> Lowerer<'a> {
                     other => return Err(ProgramSpirvError::UnsupportedExpression(format!("binary {other:?}"))),
                 };
                 Ok(self.function.expressions.append(expression, span))
+            }
+            Expr::Vec3Compose { x, y, z } => {
+                let x = self.lower_expr(x)?;
+                let y = self.lower_expr(y)?;
+                let z = self.lower_expr(z)?;
+                Ok(self.function.expressions.append(Expression::Compose { ty: self.vec3_ty, components: vec![x, y, z] }, span))
             }
             Expr::UnOp { op, arg } => {
                 let arg = self.lower_expr(arg)?;
@@ -612,6 +627,7 @@ impl<'a> Lowerer<'a> {
                     UnOp::Atan => Expression::Math { fun: MathFunction::Atan, arg, arg1: None, arg2: None, arg3: None },
                     UnOp::Abs => Expression::Math { fun: MathFunction::Abs, arg, arg1: None, arg2: None, arg3: None },
                     UnOp::Ln => Expression::Math { fun: MathFunction::Log, arg, arg1: None, arg2: None, arg3: None },
+                    UnOp::Vec3Comp(index) => Expression::AccessIndex { base: arg, index: *index as u32 },
                     UnOp::IsFinite => {
                         let same = self.function.expressions.append(Expression::Binary { op: BinaryOperator::Equal, left: arg, right: arg }, span);
                         let abs = self.function.expressions.append(Expression::Math { fun: MathFunction::Abs, arg, arg1: None, arg2: None, arg3: None }, span);
