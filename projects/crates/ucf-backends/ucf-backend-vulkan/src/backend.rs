@@ -1126,6 +1126,18 @@ impl VulkanBackend {
             self.device.update_descriptor_sets(&writes, &[]);
 
             self.with_commands(|cmd| {
+                let dependency = vk::MemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::MEMORY_WRITE)
+                    .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE);
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::ALL_COMMANDS,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::DependencyFlags::empty(),
+                    std::slice::from_ref(&dependency),
+                    &[],
+                    &[],
+                );
                 self.device
                     .cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, pipeline);
                 self.device.cmd_bind_descriptor_sets(
