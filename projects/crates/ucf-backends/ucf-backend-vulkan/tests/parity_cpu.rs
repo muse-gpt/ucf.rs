@@ -577,6 +577,43 @@ fn vulkan_generic_bounded_for_matches_cpu_interpreter() {
 }
 
 #[test]
+fn vulkan_loop_local_snapshots_match_cpu_interpreter() {
+    for use_while in [false, true] {
+        let body = vec![
+            Stmt::Let { id: 2, ty: Ty::f32(), init: Expr::LoadLocal(0) },
+            Stmt::StoreLocal { id: 0, value: Expr::BinOp {
+                op: BinOp::Add, lhs: Box::new(Expr::LoadLocal(2)), rhs: Box::new(Expr::ConstF32(1.0)),
+            } },
+            Stmt::StoreLocal { id: 3, value: Expr::BinOp {
+                op: BinOp::Add, lhs: Box::new(Expr::LoadLocal(3)), rhs: Box::new(Expr::LoadLocal(2)),
+            } },
+        ];
+        let loop_stmt = if use_while {
+            Stmt::While { cond: Expr::ConstBool(true), body, limit: 4 }
+        } else {
+            Stmt::For { iter: 1, body, limit: 4 }
+        };
+        let program = Program { version: 1, entry: 0, functions: vec![Function {
+            name: "loop_snapshot".into(), params: Vec::new(),
+            locals: vec![(0, Ty::f32()), (2, Ty::f32()), (3, Ty::f32())],
+            body: vec![
+                Stmt::Let { id: 0, ty: Ty::f32(), init: Expr::ConstF32(0.0) },
+                Stmt::Let { id: 3, ty: Ty::f32(), init: Expr::ConstF32(0.0) },
+                loop_stmt, Stmt::Return(Expr::LoadLocal(3)),
+            ], ret: Ty::f32(),
+        }] };
+        let graph = generic_dispatch_graph(&program, 65, 70);
+        let expected = run_cpu_generic_dispatch(&graph);
+        let mut backend = VulkanBackend::new().expect("Vulkan loop snapshots");
+        backend.prepare(&graph).unwrap();
+        backend.run_prepared(&graph).unwrap();
+        let actual = backend.read_f32(Rid(10)).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(&actual[..65], &[6.0; 65]);
+    }
+}
+
+#[test]
 fn vulkan_generic_bounded_while_matches_cpu_interpreter() {
     let program = Program {
         version: 1,

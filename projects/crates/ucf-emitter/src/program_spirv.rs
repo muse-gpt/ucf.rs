@@ -250,6 +250,34 @@ impl<'a> Lowerer<'a> {
         self.emitted_count = self.function.expressions.len();
     }
 
+    fn lower_loop_local(&mut self, stmt: &Stmt, block: &mut naga::Block) -> Result<(), ProgramSpirvError> {
+        let (id, value) = match stmt {
+            Stmt::Let { id, ty, init } => {
+                let local_ty = match ty {
+                    Ty::Scalar(ucf_program::ScalarTy::F32) => self.f32_ty,
+                    Ty::Vec3 => self.vec3_ty,
+                    Ty::Scalar(ucf_program::ScalarTy::U32) => self.u32_ty,
+                    Ty::Scalar(ucf_program::ScalarTy::Bool) => self.bool_ty,
+                    other => return Err(ProgramSpirvError::UnsupportedType(format!("loop local {other:?}"))),
+                };
+                let local = self.function.local_variables.append(
+                    naga::LocalVariable { name: Some(format!("local_{id}")), ty: local_ty, init: None },
+                    naga::Span::UNDEFINED,
+                );
+                let value = self.lower_expr(init)?;
+                self.locals.insert(*id, local);
+                (*id, value)
+            }
+            Stmt::StoreLocal { id, value } => (*id, self.lower_expr(value)?),
+            other => return Err(ProgramSpirvError::UnsupportedStatement(format!("native GPU loop body: {other:?}"))),
+        };
+        let local = *self.locals.get(&id).ok_or_else(|| ProgramSpirvError::UnsupportedStatement(format!("unknown local {id}")))?;
+        let pointer = self.function.expressions.append(Expression::LocalVariable(local), naga::Span::UNDEFINED);
+        self.emit_pending_into(block);
+        block.push(Statement::Store { pointer, value }, naga::Span::UNDEFINED);
+        Ok(())
+    }
+
     fn lower_statements(&mut self, function: &UcfFunction) -> Result<naga::Handle<Expression>, ProgramSpirvError> {
         let mut result = None;
         for stmt in &function.body {
@@ -334,18 +362,7 @@ impl<'a> Lowerer<'a> {
                     stop.push(Statement::Break, naga::Span::UNDEFINED);
                     loop_body.push(Statement::If { condition: done, accept: stop, reject: naga::Block::new() }, naga::Span::UNDEFINED);
                     for nested in body {
-                        let Stmt::StoreLocal { id, value } = nested else {
-                            return Err(ProgramSpirvError::UnsupportedStatement(
-                                "native GPU fixed For currently supports StoreLocal bodies only".into(),
-                            ));
-                        };
-                        let local = *self.locals.get(id).ok_or_else(|| {
-                            ProgramSpirvError::UnsupportedStatement(format!("unknown local {id}"))
-                        })?;
-                        let pointer = self.function.expressions.append(Expression::LocalVariable(local), naga::Span::UNDEFINED);
-                        let value = self.lower_expr(value)?;
-                        self.emit_pending_into(&mut loop_body);
-                        loop_body.push(Statement::Store { pointer, value }, naga::Span::UNDEFINED);
+                        self.lower_loop_local(nested, &mut loop_body)?;
                     }
                     let one = self.function.expressions.append(Expression::Literal(Literal::U32(1)), naga::Span::UNDEFINED);
                     let current = self.function.expressions.append(Expression::Load { pointer: iter_ptr }, naga::Span::UNDEFINED);
@@ -387,18 +404,7 @@ impl<'a> Lowerer<'a> {
                     body_stop.push(Statement::Break, naga::Span::UNDEFINED);
                     let mut body_accept = naga::Block::new();
                     for nested in body {
-                        let Stmt::StoreLocal { id, value } = nested else {
-                            return Err(ProgramSpirvError::UnsupportedStatement(
-                                "native GPU bounded While currently supports StoreLocal bodies only".into(),
-                            ));
-                        };
-                        let local = *self.locals.get(id).ok_or_else(|| {
-                            ProgramSpirvError::UnsupportedStatement(format!("unknown local {id}"))
-                        })?;
-                        let pointer = self.function.expressions.append(Expression::LocalVariable(local), naga::Span::UNDEFINED);
-                        let value = self.lower_expr(value)?;
-                        self.emit_pending_into(&mut body_accept);
-                        body_accept.push(Statement::Store { pointer, value }, naga::Span::UNDEFINED);
+                        self.lower_loop_local(nested, &mut body_accept)?;
                     }
                     body_block.push(Statement::If { condition, accept: body_accept, reject: body_stop }, naga::Span::UNDEFINED);
                     loop_body.append(&mut body_block);
