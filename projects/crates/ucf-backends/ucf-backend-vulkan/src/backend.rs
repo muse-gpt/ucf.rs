@@ -17,6 +17,17 @@ struct DeviceBuffer {
     bytes: usize,
 }
 
+struct ComputePipelineCache {
+    spirv: Vec<u8>,
+    entry: String,
+    buffer_count: usize,
+    push_size: usize,
+    module: vk::ShaderModule,
+    set_layout: vk::DescriptorSetLayout,
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
+}
+
 /// Vulkan compute / graphics backend with device-resident buffers.
 pub struct VulkanBackend {
     _entry: Entry,
@@ -28,6 +39,7 @@ pub struct VulkanBackend {
     /// Queue family supports `GRAPHICS` (required for Raster `draw=tri`).
     graphics: bool,
     buffers: BTreeMap<ResourceId, DeviceBuffer>,
+    compute_pipelines: Vec<ComputePipelineCache>,
     strategies: WiredStrategies,
     /// Last descriptor path label taken by a submit (for thin-gate assertions).
     last_descriptor_path: &'static str,
@@ -116,6 +128,7 @@ impl VulkanBackend {
                 command_pool,
                 graphics,
                 buffers: BTreeMap::new(),
+                compute_pipelines: Vec::new(),
                 strategies,
                 last_descriptor_path: "",
                 last_sync_path: "",
@@ -989,67 +1002,87 @@ impl VulkanBackend {
         groups_x: u32,
     ) -> Result<()> {
         unsafe {
-            let words: Vec<u32> = spirv_bytes
-                .chunks_exact(4)
-                .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
-            let module_info = vk::ShaderModuleCreateInfo::default().code(&words);
-            let module = self
-                .device
-                .create_shader_module(&module_info, None)
-                .map_err(vk_err)?;
-
-            let bindings: Vec<_> = (0..buffers.len() as u32)
-                .map(|i| {
-                    vk::DescriptorSetLayoutBinding::default()
-                        .binding(i)
-                        .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
-                        .descriptor_count(1)
-                        .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                })
-                .collect();
-            let set_layout_info =
-                vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
-            self.mark_descriptor_path();
-            let set_layout = self
-                .device
-                .create_descriptor_set_layout(&set_layout_info, None)
-                .map_err(vk_err)?;
-
-            let push_range = vk::PushConstantRange::default()
-                .stage_flags(vk::ShaderStageFlags::COMPUTE)
-                .offset(0)
-                .size(push_bytes.len() as u32);
-            let mut layout_info = vk::PipelineLayoutCreateInfo::default()
-                .set_layouts(std::slice::from_ref(&set_layout));
-            if !push_bytes.is_empty() {
-                layout_info = layout_info.push_constant_ranges(std::slice::from_ref(&push_range));
-            }
-            let pipeline_layout = self
-                .device
-                .create_pipeline_layout(&layout_info, None)
-                .map_err(vk_err)?;
-
-            let entry_c = std::ffi::CString::new(entry).map_err(|e| {
-                map_backend_err(BackendError(format!("invalid entry `{entry}`: {e}")))
-            })?;
-            let stage = vk::PipelineShaderStageCreateInfo::default()
-                .stage(vk::ShaderStageFlags::COMPUTE)
-                .module(module)
-                .name(entry_c.as_c_str());
-            let pipeline_info = vk::ComputePipelineCreateInfo::default()
-                .stage(stage)
-                .layout(pipeline_layout);
-            self.mark_pipeline_path();
-            let pipelines = self
-                .device
-                .create_compute_pipelines(
-                    vk::PipelineCache::null(),
-                    std::slice::from_ref(&pipeline_info),
-                    None,
-                )
-                .map_err(|(_, e)| vk_err(e))?;
-            let pipeline = pipelines[0];
+            let cache_index = if let Some(index) = self.compute_pipelines.iter().position(|cached| {
+                cached.spirv == spirv_bytes
+                    && cached.entry == entry
+                    && cached.buffer_count == buffers.len()
+                    && cached.push_size == push_bytes.len()
+            }) {
+                index
+            } else {
+                let words: Vec<u32> = spirv_bytes
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                    .collect();
+                let module_info = vk::ShaderModuleCreateInfo::default().code(&words);
+                let module = self
+                    .device
+                    .create_shader_module(&module_info, None)
+                    .map_err(vk_err)?;
+                let bindings: Vec<_> = (0..buffers.len() as u32)
+                    .map(|i| {
+                        vk::DescriptorSetLayoutBinding::default()
+                            .binding(i)
+                            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                            .descriptor_count(1)
+                            .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                    })
+                    .collect();
+                let set_layout_info =
+                    vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+                self.mark_descriptor_path();
+                let set_layout = self
+                    .device
+                    .create_descriptor_set_layout(&set_layout_info, None)
+                    .map_err(vk_err)?;
+                let push_range = vk::PushConstantRange::default()
+                    .stage_flags(vk::ShaderStageFlags::COMPUTE)
+                    .offset(0)
+                    .size(push_bytes.len() as u32);
+                let mut layout_info = vk::PipelineLayoutCreateInfo::default()
+                    .set_layouts(std::slice::from_ref(&set_layout));
+                if !push_bytes.is_empty() {
+                    layout_info = layout_info.push_constant_ranges(std::slice::from_ref(&push_range));
+                }
+                let pipeline_layout = self
+                    .device
+                    .create_pipeline_layout(&layout_info, None)
+                    .map_err(vk_err)?;
+                let entry_c = std::ffi::CString::new(entry).map_err(|e| {
+                    map_backend_err(BackendError(format!("invalid entry `{entry}`: {e}")))
+                })?;
+                let stage = vk::PipelineShaderStageCreateInfo::default()
+                    .stage(vk::ShaderStageFlags::COMPUTE)
+                    .module(module)
+                    .name(entry_c.as_c_str());
+                let pipeline_info = vk::ComputePipelineCreateInfo::default()
+                    .stage(stage)
+                    .layout(pipeline_layout);
+                self.mark_pipeline_path();
+                let pipelines = self
+                    .device
+                    .create_compute_pipelines(
+                        vk::PipelineCache::null(),
+                        std::slice::from_ref(&pipeline_info),
+                        None,
+                    )
+                    .map_err(|(_, e)| vk_err(e))?;
+                self.compute_pipelines.push(ComputePipelineCache {
+                    spirv: spirv_bytes.to_vec(),
+                    entry: entry.to_owned(),
+                    buffer_count: buffers.len(),
+                    push_size: push_bytes.len(),
+                    module,
+                    set_layout,
+                    pipeline_layout,
+                    pipeline: pipelines[0],
+                });
+                self.compute_pipelines.len() - 1
+            };
+            let cached = &self.compute_pipelines[cache_index];
+            let set_layout = cached.set_layout;
+            let pipeline_layout = cached.pipeline_layout;
+            let pipeline = cached.pipeline;
 
             let pool_sizes = [vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
@@ -1115,11 +1148,7 @@ impl VulkanBackend {
                 self.device.cmd_dispatch(cmd, groups_x, 1, 1);
             })?;
 
-            self.device.destroy_pipeline(pipeline, None);
-            self.device.destroy_pipeline_layout(pipeline_layout, None);
             self.device.destroy_descriptor_pool(desc_pool, None);
-            self.device.destroy_descriptor_set_layout(set_layout, None);
-            self.device.destroy_shader_module(module, None);
             Ok(())
         }
     }
@@ -1187,6 +1216,12 @@ impl Drop for VulkanBackend {
     fn drop(&mut self) {
         unsafe {
             let _ = self.device.device_wait_idle();
+            for cached in self.compute_pipelines.drain(..) {
+                self.device.destroy_pipeline(cached.pipeline, None);
+                self.device.destroy_pipeline_layout(cached.pipeline_layout, None);
+                self.device.destroy_descriptor_set_layout(cached.set_layout, None);
+                self.device.destroy_shader_module(cached.module, None);
+            }
             let buffers = std::mem::take(&mut self.buffers);
             for (_, buf) in buffers {
                 self.device.destroy_buffer(buf.buffer, None);
