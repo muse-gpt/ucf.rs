@@ -614,6 +614,46 @@ fn vulkan_loop_local_snapshots_match_cpu_interpreter() {
 }
 
 #[test]
+fn vulkan_nested_bounded_loops_match_cpu_interpreter() {
+    let add = |id, value| Stmt::StoreLocal { id, value: Expr::BinOp {
+        op: BinOp::Add, lhs: Box::new(Expr::LoadLocal(id)), rhs: Box::new(Expr::ConstF32(value)),
+    } };
+    for outer_while in [false, true] {
+        let inner_body = vec![add(0, 1.0), add(2, 1.0)];
+        let inner = if outer_while {
+            Stmt::For { iter: 4, limit: 3, body: inner_body }
+        } else {
+            Stmt::While { cond: Expr::BinOp { op: BinOp::Lt, lhs: Box::new(Expr::LoadLocal(2)), rhs: Box::new(Expr::ConstF32(3.0)) }, limit: 3, body: inner_body }
+        };
+        let body = vec![Stmt::StoreLocal { id: 2, value: Expr::ConstF32(0.0) }, inner, add(3, 1.0)];
+        let outer = if outer_while {
+            Stmt::While { cond: Expr::ConstBool(true), limit: 4, body }
+        } else {
+            Stmt::For { iter: 1, limit: 4, body }
+        };
+        let program = Program { version: 1, entry: 0, functions: vec![Function {
+            name: "nested_accumulate".into(), params: Vec::new(),
+            locals: vec![(0, Ty::f32()), (2, Ty::f32()), (3, Ty::f32())],
+            body: vec![
+                Stmt::Let { id: 0, ty: Ty::f32(), init: Expr::ConstF32(0.0) },
+                Stmt::Let { id: 2, ty: Ty::f32(), init: Expr::ConstF32(0.0) },
+                Stmt::Let { id: 3, ty: Ty::f32(), init: Expr::ConstF32(0.0) },
+                outer, Stmt::Return(Expr::LoadLocal(0)),
+            ], ret: Ty::f32(),
+        }] };
+        let graph = generic_dispatch_graph(&program, 65, 70);
+        let expected = run_cpu_generic_dispatch(&graph);
+        let mut backend = VulkanBackend::new().expect("Vulkan nested loops");
+        backend.prepare(&graph).unwrap();
+        backend.run_prepared(&graph).unwrap();
+        let actual = backend.read_f32(Rid(10)).unwrap();
+        assert_eq!(actual, expected);
+        assert_eq!(&actual[..65], &[12.0; 65]);
+        assert_eq!(&actual[65..], &[0.0; 5]);
+    }
+}
+
+#[test]
 fn vulkan_generic_bounded_while_matches_cpu_interpreter() {
     let program = Program {
         version: 1,

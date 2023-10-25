@@ -252,6 +252,15 @@ impl<'a> Lowerer<'a> {
 
     fn lower_loop_local(&mut self, stmt: &Stmt, block: &mut naga::Block) -> Result<(), ProgramSpirvError> {
         let (id, value) = match stmt {
+            Stmt::For { .. } | Stmt::While { .. } => {
+                self.emit_pending_into(block);
+                let parent = std::mem::replace(&mut self.function.body, naga::Block::new());
+                let result = self.lower_statement_sequence(std::slice::from_ref(stmt));
+                let mut nested = std::mem::replace(&mut self.function.body, parent);
+                block.append(&mut nested);
+                result?;
+                return Ok(());
+            }
             Stmt::Let { id, ty, init } => {
                 let local_ty = match ty {
                     Ty::Scalar(ucf_program::ScalarTy::F32) => self.f32_ty,
@@ -279,11 +288,16 @@ impl<'a> Lowerer<'a> {
     }
 
     fn lower_statements(&mut self, function: &UcfFunction) -> Result<naga::Handle<Expression>, ProgramSpirvError> {
+        self.lower_statement_sequence(&function.body)?
+            .ok_or_else(|| ProgramSpirvError::UnsupportedStatement("entry has no return".into()))
+    }
+
+    fn lower_statement_sequence(&mut self, statements: &[Stmt]) -> Result<Option<naga::Handle<Expression>>, ProgramSpirvError> {
         let mut result = None;
-        for stmt in &function.body {
+        for stmt in statements {
             match stmt {
                 Stmt::Cfg { entry, blocks } => {
-                    if result.is_some() || function.body.len() != 1 {
+                    if result.is_some() || statements.len() != 1 {
                         return Err(ProgramSpirvError::UnsupportedStatement("CFG must be the complete function body".into()));
                     }
                     result = Some(self.lower_pure_cfg(*entry, blocks)?);
@@ -421,7 +435,7 @@ impl<'a> Lowerer<'a> {
                 other => return Err(ProgramSpirvError::UnsupportedStatement(format!("{other:?}"))),
             }
         }
-        result.ok_or_else(|| ProgramSpirvError::UnsupportedStatement("entry has no return".into()))
+        Ok(result)
     }
 
     fn lower_pure_cfg(&mut self, entry: u32, blocks: &[ucf_program::CfgBlock]) -> Result<naga::Handle<Expression>, ProgramSpirvError> {
