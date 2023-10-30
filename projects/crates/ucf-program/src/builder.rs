@@ -699,7 +699,7 @@ mod tests {
         function.return_value(exit_value).expect("exit return");
         let program = ProgramBuilder::new().entry(function).expect("entry").finish().expect("valid CFG loop");
         let result = CpuInterpreter::new().run(&program).expect("CPU CFG loop");
-        assert_eq!(result.value, Value::F64(4.0));
+        assert_eq!(result.value, Value::F32(4.0));
         assert!(result.loop_steps >= 4);
     }
 

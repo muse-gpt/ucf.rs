@@ -130,9 +130,9 @@ impl CpuInterpreter {
                     CfgInstruction::ConstU32 { result, value } => {
                         values.insert(*result, Value::U32(*value));
                     }
-                    CfgInstruction::LoadUniform { result, slot, .. } => {
+                    CfgInstruction::LoadUniform { result, slot, ty } => {
                         let value = self.uniforms.get(slot).cloned().ok_or(ProgramError::MissingUniform(*slot))?;
-                        values.insert(*result, value);
+                        values.insert(*result, coerce_binding_value(value, ty)?);
                     }
                     CfgInstruction::LoadBuffer { result, resource, index, .. } => {
                         let index = value_index(values.get(index).cloned().ok_or_else(|| missing_ssa(*index))?)?;
@@ -370,6 +370,23 @@ impl CpuInterpreter {
     }
 
     fn eval_binop(&self, op: BinOp, l: Value, r: Value) -> Result<Value, ProgramError> {
+        if matches!((&l, &r), (Value::U32(_), Value::U32(0))) && matches!(op, BinOp::Div | BinOp::Mod) {
+            return Err(ProgramError::DivideByZero);
+        }
+        if let (Value::F32(left), Value::F32(right)) = (&l, &r) {
+            let result = match op {
+                BinOp::Add => Some(*left + *right),
+                BinOp::Sub => Some(*left - *right),
+                BinOp::Mul => Some(*left * *right),
+                BinOp::Div => Some(*left / *right),
+                BinOp::Min => Some(left.min(*right)),
+                BinOp::Max => Some(left.max(*right)),
+                BinOp::Mod => Some(*left % *right),
+                BinOp::Pow => Some(left.powf(*right)),
+                _ => None,
+            };
+            if let Some(result) = result { return Ok(Value::F32(result)); }
+        }
         match op {
             BinOp::Dot => {
                 let a = l.as_vec3().map_err(|_| ProgramError::UnsupportedOp("dot".into()))?;
@@ -418,12 +435,7 @@ impl CpuInterpreter {
                     BinOp::Add => la + ra,
                     BinOp::Sub => la - ra,
                     BinOp::Mul => la * ra,
-                    BinOp::Div => {
-                        if ra == 0.0 {
-                            return Err(ProgramError::DivideByZero);
-                        }
-                        la / ra
-                    }
+                    BinOp::Div => la / ra,
                     BinOp::Min => la.min(ra),
                     BinOp::Max => la.max(ra),
                     _ => return Err(ProgramError::UnsupportedOp(format!("{:?}", op))),
@@ -436,12 +448,7 @@ impl CpuInterpreter {
                 Ok(Value::F64(match op {
                     BinOp::Min => la.min(ra),
                     BinOp::Max => la.max(ra),
-                    BinOp::Mod => {
-                        if ra == 0.0 {
-                            return Err(ProgramError::DivideByZero);
-                        }
-                        la % ra
-                    }
+                    BinOp::Mod => la % ra,
                     BinOp::Pow => la.powf(ra),
                     _ => unreachable!(),
                 }))
@@ -464,6 +471,19 @@ impl CpuInterpreter {
     }
 
     fn eval_unop(&self, op: UnOp, v: Value) -> Result<Value, ProgramError> {
+        if let Value::F32(value) = &v {
+            let result = match op {
+                UnOp::Neg => Some(-*value),
+                UnOp::Sqrt => Some(value.sqrt()),
+                UnOp::Sin => Some(value.sin()),
+                UnOp::Cos => Some(value.cos()),
+                UnOp::Atan => Some(value.atan()),
+                UnOp::Abs => Some(value.abs()),
+                UnOp::Ln => Some(value.ln()),
+                _ => None,
+            };
+            if let Some(result) = result { return Ok(Value::F32(result)); }
+        }
         match op {
             UnOp::Neg => {
                 if let Ok(x) = v.as_f64() {
@@ -508,6 +528,22 @@ use crate::error::ValidateError;
 
 fn type_mismatch(expected: &str, actual: &Value) -> ProgramError {
     ProgramError::TypeMismatch { expected: expected.into(), actual: actual.type_name().into() }
+}
+
+fn coerce_binding_value(value: Value, ty: &crate::Ty) -> Result<Value, ProgramError> {
+    use crate::{ScalarTy, Ty};
+    match (ty, &value) {
+        (Ty::Scalar(ScalarTy::F32), Value::F32(_) | Value::F64(_) | Value::U32(_)) => Ok(Value::F32(value.as_f64().unwrap() as f32)),
+        (Ty::Scalar(ScalarTy::F64), Value::F32(_) | Value::F64(_) | Value::U32(_)) => Ok(Value::F64(value.as_f64().unwrap())),
+        (Ty::Scalar(ScalarTy::U32), Value::U32(_)) | (Ty::Scalar(ScalarTy::Bool), Value::Bool(_)) | (Ty::Vec3, Value::Vec3(_)) => Ok(value),
+        (Ty::Scalar(ScalarTy::U32), Value::F32(_) | Value::F64(_)) => {
+            let scalar = value.as_f64().unwrap();
+            if scalar.is_finite() && (0.0..=u32::MAX as f64).contains(&scalar) && scalar.fract() == 0.0 {
+                Ok(Value::U32(scalar as u32))
+            } else { Err(type_mismatch("u32 binding", &value)) }
+        }
+        _ => Err(type_mismatch(&format!("{ty:?} binding"), &value)),
+    }
 }
 
 fn missing_ssa(id: u32) -> ProgramError {
