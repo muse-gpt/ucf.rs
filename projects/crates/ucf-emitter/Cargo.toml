@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 libloading = { workspace = true }
 naga = { workspace = true }
+rspirv = { workspace = true }
 ucf-types = { workspace = true }
 ucf-program = { workspace = true }
 

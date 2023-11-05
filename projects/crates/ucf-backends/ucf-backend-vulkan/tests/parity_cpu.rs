@@ -697,6 +697,26 @@ fn vulkan_generic_bounded_while_matches_cpu_interpreter() {
 }
 
 #[test]
+fn vulkan_scalar_f32_rounding_matches_typed_cpu_execution() {
+    let mut builder = FunctionBuilder::new("f32_rounding");
+    let large = builder.emit_load_uniform(0, Ty::f32()).unwrap();
+    let one = builder.emit_const_f32(1.0).unwrap();
+    let sum = builder.emit_binary(BinOp::Add, large, one).unwrap();
+    let difference = builder.emit_binary(BinOp::Sub, sum, large).unwrap();
+    builder.return_value(difference).unwrap();
+    let program = ProgramBuilder::new().entry(builder).unwrap().finish().unwrap();
+    let mut graph = generic_dispatch_graph(&program, 65, 70);
+    graph.tasks.nodes[0].params.insert("uniform_0".into(), ParamValue::F64(16_777_216.0));
+    let expected = run_cpu_generic_dispatch(&graph);
+    let mut vk = VulkanBackend::new().expect("Vulkan scalar F32 precision");
+    vk.prepare(&graph).unwrap();
+    vk.run_prepared(&graph).unwrap();
+    let actual = vk.read_f32(Rid(10)).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(actual, vec![0.0; 70]);
+}
+
+#[test]
 fn vulkan_generic_is_finite_matches_cpu_interpreter() {
     let program = Program {
         version: 1,

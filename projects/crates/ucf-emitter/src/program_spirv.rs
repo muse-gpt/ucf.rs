@@ -214,7 +214,26 @@ pub fn emit_program_spirv(program: &Program, entry: &str) -> Result<Vec<u8>, Pro
     };
     let words = naga::back::spv::write_vec(&module, &info, &options, None)
         .map_err(|e| ProgramSpirvError::Backend(format!("SPIR-V write failed: {e}")))?;
+    let words = preserve_float_evaluation_order(&words)?;
     Ok(words.into_iter().flat_map(u32::to_le_bytes).collect())
+}
+
+fn preserve_float_evaluation_order(words: &[u32]) -> Result<Vec<u32>, ProgramSpirvError> {
+    use rspirv::{binary::Assemble, dr::{Instruction, Operand}, spirv::{Decoration, Op}};
+    let mut module = rspirv::dr::load_words(words)
+        .map_err(|error| ProgramSpirvError::Backend(format!("SPIR-V parse failed: {error}")))?;
+    let targets = module.functions.iter().flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.instructions)
+        .filter(|instruction| matches!(instruction.class.opcode,
+            Op::FAdd | Op::FSub | Op::FMul | Op::FDiv | Op::FRem | Op::FMod |
+            Op::VectorTimesScalar | Op::MatrixTimesScalar | Op::VectorTimesMatrix |
+            Op::MatrixTimesVector | Op::MatrixTimesMatrix | Op::OuterProduct | Op::Dot))
+        .filter_map(|instruction| instruction.result_id).collect::<Vec<_>>();
+    for target in targets {
+        module.annotations.push(Instruction::new(Op::Decorate, None, None,
+            vec![Operand::IdRef(target), Operand::Decoration(Decoration::NoContraction)]));
+    }
+    Ok(module.assemble())
 }
 
 struct Lowerer<'a> {
@@ -501,14 +520,20 @@ impl<'a> Lowerer<'a> {
         let handle = match instruction {
             CfgInstruction::ConstF32 { value, .. } => self.function.expressions.append(Expression::Literal(Literal::F32(*value)), span),
             CfgInstruction::ConstU32 { value, .. } => self.function.expressions.append(Expression::Literal(Literal::U32(*value)), span),
-            CfgInstruction::LoadUniform { slot, .. } => {
+            CfgInstruction::LoadUniform { slot, ty, .. } => {
+                if *ty != Ty::f32() {
+                    return Err(ProgramSpirvError::UnsupportedType(format!("uniform {slot}: {ty:?}")));
+                }
                 let global = self.uniform_global.ok_or_else(|| ProgramSpirvError::UnsupportedExpression("uniform without push-constant layout".into()))?;
                 let base = self.function.expressions.append(Expression::GlobalVariable(global), span);
                 let field = self.function.expressions.append(Expression::AccessIndex { base, index: *slot + 1 }, span);
                 self.function.expressions.append(Expression::Load { pointer: field }, span)
             }
             CfgInstruction::GlobalId { .. } => self.gid_x,
-            CfgInstruction::LoadBuffer { resource, index, .. } => {
+            CfgInstruction::LoadBuffer { resource, index, ty, .. } => {
+                if *ty != Ty::f32() {
+                    return Err(ProgramSpirvError::UnsupportedType(format!("buffer {resource}: {ty:?}")));
+                }
                 let global = *self.buffer_globals.get(resource).ok_or_else(|| {
                     ProgramSpirvError::UnsupportedStatement(format!("unknown buffer resource {resource}"))
                 })?;
@@ -762,6 +787,41 @@ fn resource_slots_stmt(stmt: &Stmt) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn floating_arithmetic_results_disallow_contraction() {
+        use rspirv::{dr::Operand, spirv::{Decoration, Op}};
+        let mut builder = ucf_program::FunctionBuilder::new("float_order");
+        let value = builder.emit_load_uniform(0, Ty::f32()).unwrap();
+        let one = builder.emit_const_f32(1.0).unwrap();
+        let sum = builder.emit_binary(BinOp::Add, value, one).unwrap();
+        let result = builder.emit_binary(BinOp::Sub, sum, value).unwrap();
+        builder.return_value(result).unwrap();
+        let program = ucf_program::ProgramBuilder::new().entry(builder).unwrap().finish().unwrap();
+        let bytes = emit_program_spirv(&program, "precise_main").unwrap();
+        let module = rspirv::dr::load_bytes(&bytes).unwrap();
+        let targets = module.functions.iter().flat_map(|function| &function.blocks).flat_map(|block| &block.instructions)
+            .filter(|instruction| matches!(instruction.class.opcode, Op::FAdd | Op::FSub))
+            .filter_map(|instruction| instruction.result_id).collect::<Vec<_>>();
+        assert!(!targets.is_empty());
+        for target in targets {
+            assert!(module.annotations.iter().any(|instruction| instruction.class.opcode == Op::Decorate &&
+                instruction.operands == vec![Operand::IdRef(target), Operand::Decoration(Decoration::NoContraction)]));
+        }
+    }
+
+    #[test]
+    fn rejects_f64_uniform_in_f32_returning_program() {
+        let mut builder = ucf_program::FunctionBuilder::new("f64_uniform");
+        let value = builder.emit_load_uniform(0, Ty::f64()).unwrap();
+        let condition = builder.emit_binary(BinOp::Eq, value, value).unwrap();
+        let one = builder.emit_const_f32(1.0).unwrap();
+        let zero = builder.emit_const_f32(0.0).unwrap();
+        let result = builder.emit_select(condition, one, zero).unwrap();
+        builder.return_value(result).unwrap();
+        let program = ucf_program::ProgramBuilder::new().entry(builder).unwrap().finish().unwrap();
+        assert!(matches!(emit_program_spirv(&program, "unsupported_main"), Err(ProgramSpirvError::UnsupportedType(_))));
+    }
 
     #[test]
     fn lowers_scalar_program_without_shader_source() {
