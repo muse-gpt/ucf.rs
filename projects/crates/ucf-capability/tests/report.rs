@@ -21,3 +21,15 @@ fn capability_report_formats_sorted_features() {
         ]
     );
 }
+
+#[test]
+fn program_precision_is_visible_in_capability_report() {
+    let report = CapabilityReport::from_backends([
+        ("cpu", FeatureSet::new().with(Feature::ProgramFloat32).with(Feature::ProgramFloat64)),
+        ("native", FeatureSet::new().with(Feature::ProgramFloat32)),
+    ]);
+    assert_eq!(report.lines(), vec![
+        "cpu: ProgramFloat32, ProgramFloat64".to_string(),
+        "native: ProgramFloat32".to_string(),
+    ]);
+}

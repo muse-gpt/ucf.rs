@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use ucf_capability::FeatureSet;
+use ucf_capability::{Feature, FeatureSet};
 use ucf_ir::{Dispatch, Graph, ParamValue, TaskKind, TaskNode};
 use ucf_program::{program_hash, CpuExecResult, CpuInterpreter, Program, Value};
 use ucf_scheduler::{
@@ -145,7 +145,7 @@ impl Backend for CpuBackend {
     }
 
     fn features(&self) -> FeatureSet {
-        FeatureSet::new()
+        FeatureSet::new().with(Feature::ProgramFloat32).with(Feature::ProgramFloat64)
     }
 
     fn bind_externals(&mut self, bindings: &ExecutionBindings) -> Result<()> {
@@ -524,6 +524,21 @@ mod program_tests {
     use super::*;
     use ucf_program::{BinOp, Expr, Function, Program, ScalarTy, Stmt, Ty};
     use ucf_types::{Access, Domain, Objective, Priority, ResourceKind, ResourceNode, ShaderId, TaskId};
+
+    #[test]
+    fn advertised_float64_arithmetic_preserves_sub_float32_increment() {
+        let backend = CpuBackend::new();
+        assert!(backend.features().has(Feature::ProgramFloat32));
+        assert!(backend.features().has(Feature::ProgramFloat64));
+        let mut builder = ucf_program::FunctionBuilder::new("precision_probe");
+        let initial = builder.emit_const_f64(16777216.0).unwrap();
+        let increment = builder.emit_const_f64(1.0).unwrap();
+        let result = builder.emit_binary(BinOp::Add, initial, increment).unwrap();
+        builder.return_value(result).unwrap();
+        let program = ucf_program::ProgramBuilder::new().entry(builder).unwrap().finish().unwrap();
+        let report = backend.execute_program(&program, 1, []).unwrap();
+        assert_eq!(report.instances[0].value, Value::F64(16777217.0));
+    }
 
     #[test]
     fn execute_program_uses_interpreter_and_reports_hash() {

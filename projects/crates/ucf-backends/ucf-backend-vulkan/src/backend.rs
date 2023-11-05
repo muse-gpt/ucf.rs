@@ -113,6 +113,7 @@ impl VulkanBackend {
                 .map_err(|e| map_backend_err(BackendError(format!("command_pool: {e}"))))?;
 
             let features = FeatureSet::new()
+                .with(Feature::ProgramFloat32)
                 .with(Feature::Bindless)
                 .with(Feature::DescriptorBuffer)
                 .with(Feature::DynamicRendering)
@@ -1253,6 +1254,7 @@ impl Backend for VulkanBackend {
 
     fn features(&self) -> FeatureSet {
         FeatureSet::new()
+            .with(Feature::ProgramFloat32)
             .with(Feature::Bindless)
             .with(Feature::DescriptorBuffer)
             .with(Feature::DynamicRendering)
