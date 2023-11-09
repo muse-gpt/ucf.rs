@@ -44,14 +44,15 @@ impl std::error::Error for ProgramSpirvError {}
 pub fn emit_program_spirv(program: &Program, entry: &str) -> Result<Vec<u8>, ProgramSpirvError> {
     validate_program(program).map_err(|e| ProgramSpirvError::UnsupportedStatement(format!("invalid UCF program: {e}")))?;
     let function = program.entry_fn().ok_or(ProgramSpirvError::MissingEntry)?;
-    if function.ret != Ty::f32() {
+    if function.ret != Ty::f32() && function.ret != Ty::f64() {
         return Err(ProgramSpirvError::UnsupportedType(format!("return type {:?}", function.ret)));
     }
+    let float_width = if function.ret == Ty::f64() { 8 } else { 4 };
 
     let mut module = Module::default();
     let f32_ty = module.types.insert(Type {
         name: Some("ucf_f32".into()),
-        inner: TypeInner::Scalar(Scalar { kind: ScalarKind::Float, width: 4 }),
+        inner: TypeInner::Scalar(Scalar { kind: ScalarKind::Float, width: float_width }),
     }, naga::Span::UNDEFINED);
     let vec3_ty = module.types.insert(Type {
         name: Some("ucf_vec3".into()),
@@ -68,9 +69,10 @@ pub fn emit_program_spirv(program: &Program, entry: &str) -> Result<Vec<u8>, Pro
         .max()
         .map(|slot| slot + 1)
         .unwrap_or(0);
-    if uniform_count > 16 {
+    let uniform_limit = if float_width == 8 { 15 } else { 16 };
+    if uniform_count > uniform_limit {
         return Err(ProgramSpirvError::UnsupportedType(format!(
-            "more than sixteen push-constant uniforms ({uniform_count})"
+            "push-constant uniform count {uniform_count} exceeds {uniform_limit} for scalar width {float_width}"
         )));
     }
     let push_u32_ty = module.types.insert(Type {
@@ -86,13 +88,13 @@ pub fn emit_program_spirv(program: &Program, entry: &str) -> Result<Vec<u8>, Pro
             name: Some("dispatch_count".into()), ty: push_u32_ty, binding: None, offset: 0,
         }];
         members.extend((0..uniform_count).map(|slot| StructMember {
-            name: Some(format!("u{slot}")), ty: f32_ty, binding: None, offset: 4 + slot * 4,
+            name: Some(format!("u{slot}")), ty: f32_ty, binding: None, offset: u32::from(float_width) * (slot + 1),
         }));
         let uniform_struct = module.types.insert(Type {
             name: Some("ucf_push_constants".into()),
             inner: TypeInner::Struct {
                 members,
-                span: 4 + uniform_count * 4,
+                span: u32::from(float_width) * (uniform_count + 1),
             },
         }, naga::Span::UNDEFINED);
         module.global_variables.append(GlobalVariable {
@@ -105,13 +107,13 @@ pub fn emit_program_spirv(program: &Program, entry: &str) -> Result<Vec<u8>, Pro
     };
     let output_array = module.types.insert(Type {
         name: Some("ucf_output_array".into()),
-        inner: TypeInner::Array { base: f32_ty, size: ArraySize::Dynamic, stride: 4 },
+        inner: TypeInner::Array { base: f32_ty, size: ArraySize::Dynamic, stride: u32::from(float_width) },
     }, naga::Span::UNDEFINED);
     let output_struct = module.types.insert(Type {
         name: Some("ucf_output".into()),
         inner: TypeInner::Struct {
             members: vec![StructMember { name: Some("data".into()), ty: output_array, binding: None, offset: 0 }],
-            span: 4,
+            span: u32::from(float_width),
         },
     }, naga::Span::UNDEFINED);
     let output_global = module.global_variables.append(GlobalVariable {
@@ -130,13 +132,13 @@ pub fn emit_program_spirv(program: &Program, entry: &str) -> Result<Vec<u8>, Pro
     for resource in resource_slots {
         let input_array = module.types.insert(Type {
             name: Some(format!("ucf_input_{resource}_array")),
-            inner: TypeInner::Array { base: f32_ty, size: ArraySize::Dynamic, stride: 4 },
+            inner: TypeInner::Array { base: f32_ty, size: ArraySize::Dynamic, stride: u32::from(float_width) },
         }, naga::Span::UNDEFINED);
         let input_struct = module.types.insert(Type {
             name: Some(format!("ucf_input_{resource}")),
             inner: TypeInner::Struct {
                 members: vec![StructMember { name: Some("data".into()), ty: input_array, binding: None, offset: 0 }],
-                span: 4,
+                span: u32::from(float_width),
             },
         }, naga::Span::UNDEFINED);
         let global = module.global_variables.append(GlobalVariable {
@@ -177,7 +179,7 @@ pub fn emit_program_spirv(program: &Program, entry: &str) -> Result<Vec<u8>, Pro
     let result = {
         let locals = std::collections::BTreeMap::new();
         let emitted_count = function_ir.expressions.len();
-        let mut lower = Lowerer { function: &mut function_ir, f32_ty, vec3_ty, u32_ty: push_u32_ty, bool_ty, gid_x, in_bounds, uniform_global: Some(uniform_global), buffer_globals, locals, emitted_count };
+        let mut lower = Lowerer { function: &mut function_ir, float_width, f32_ty, vec3_ty, u32_ty: push_u32_ty, bool_ty, gid_x, in_bounds, uniform_global: Some(uniform_global), buffer_globals, locals, emitted_count };
         let result = lower.lower_statements(function)?;
         lower.emit_pending();
         result
@@ -238,6 +240,7 @@ fn preserve_float_evaluation_order(words: &[u32]) -> Result<Vec<u32>, ProgramSpi
 
 struct Lowerer<'a> {
     function: &'a mut Function,
+    float_width: u8,
     f32_ty: naga::Handle<Type>,
     vec3_ty: naga::Handle<Type>,
     u32_ty: naga::Handle<Type>,
@@ -251,6 +254,9 @@ struct Lowerer<'a> {
 }
 
 impl<'a> Lowerer<'a> {
+    fn scalar_type(&self) -> Ty {
+        if self.float_width == 8 { Ty::f64() } else { Ty::f32() }
+    }
     fn emit_pending(&mut self) {
         let mut block = std::mem::take(&mut self.function.body);
         self.emit_pending_into(&mut block);
@@ -282,7 +288,7 @@ impl<'a> Lowerer<'a> {
             }
             Stmt::Let { id, ty, init } => {
                 let local_ty = match ty {
-                    Ty::Scalar(ucf_program::ScalarTy::F32) => self.f32_ty,
+                    ty if *ty == self.scalar_type() => self.f32_ty,
                     Ty::Vec3 => self.vec3_ty,
                     Ty::Scalar(ucf_program::ScalarTy::U32) => self.u32_ty,
                     Ty::Scalar(ucf_program::ScalarTy::Bool) => self.bool_ty,
@@ -323,7 +329,7 @@ impl<'a> Lowerer<'a> {
                 }
                 Stmt::Let { id, ty, init } => {
                     let local_ty = match ty {
-                        Ty::Scalar(ucf_program::ScalarTy::F32) => self.f32_ty,
+                        ty if *ty == self.scalar_type() => self.f32_ty,
                         Ty::Vec3 => self.vec3_ty,
                         Ty::Scalar(ucf_program::ScalarTy::U32) => self.u32_ty,
                         Ty::Scalar(ucf_program::ScalarTy::Bool) => self.bool_ty,
@@ -519,9 +525,10 @@ impl<'a> Lowerer<'a> {
         }
         let handle = match instruction {
             CfgInstruction::ConstF32 { value, .. } => self.function.expressions.append(Expression::Literal(Literal::F32(*value)), span),
+            CfgInstruction::ConstF64 { value, .. } if self.float_width == 8 => self.function.expressions.append(Expression::Literal(Literal::F64(*value)), span),
             CfgInstruction::ConstU32 { value, .. } => self.function.expressions.append(Expression::Literal(Literal::U32(*value)), span),
             CfgInstruction::LoadUniform { slot, ty, .. } => {
-                if *ty != Ty::f32() {
+                if *ty != self.scalar_type() {
                     return Err(ProgramSpirvError::UnsupportedType(format!("uniform {slot}: {ty:?}")));
                 }
                 let global = self.uniform_global.ok_or_else(|| ProgramSpirvError::UnsupportedExpression("uniform without push-constant layout".into()))?;
@@ -531,7 +538,7 @@ impl<'a> Lowerer<'a> {
             }
             CfgInstruction::GlobalId { .. } => self.gid_x,
             CfgInstruction::LoadBuffer { resource, index, ty, .. } => {
-                if *ty != Ty::f32() {
+                if *ty != self.scalar_type() {
                     return Err(ProgramSpirvError::UnsupportedType(format!("buffer {resource}: {ty:?}")));
                 }
                 let global = *self.buffer_globals.get(resource).ok_or_else(|| {
@@ -544,6 +551,9 @@ impl<'a> Lowerer<'a> {
                 self.function.expressions.append(Expression::Load { pointer: element }, span)
             }
             CfgInstruction::Binary { op, lhs, rhs, .. } => {
+                if self.float_width == 8 && *op == BinOp::Pow {
+                    return Err(ProgramSpirvError::UnsupportedExpression("F64 pow is not implemented".into()));
+                }
                 let left = *values.get(lhs).ok_or_else(|| ProgramSpirvError::UnsupportedExpression(format!("unknown CFG value {lhs}")))?;
                 let right = *values.get(rhs).ok_or_else(|| ProgramSpirvError::UnsupportedExpression(format!("unknown CFG value {rhs}")))?;
                 let expression = match op {
@@ -571,6 +581,9 @@ impl<'a> Lowerer<'a> {
                 self.function.expressions.append(Expression::Select { condition, accept, reject }, span)
             }
             CfgInstruction::Unary { op, arg, .. } => {
+                if self.float_width == 8 && matches!(op, UnOp::Sin | UnOp::Cos | UnOp::Atan | UnOp::Ln) {
+                    return Err(ProgramSpirvError::UnsupportedExpression(format!("F64 {op:?} is not implemented")));
+                }
                 let arg = *values.get(arg).ok_or_else(|| ProgramSpirvError::UnsupportedExpression(format!("unknown CFG value {arg}")))?;
                 match op {
                     UnOp::Neg => self.function.expressions.append(Expression::Unary { op: naga::UnaryOperator::Negate, expr: arg }, span),
@@ -584,8 +597,8 @@ impl<'a> Lowerer<'a> {
                     UnOp::IsFinite => {
                         let same = self.function.expressions.append(Expression::Binary { op: BinaryOperator::Equal, left: arg, right: arg }, span);
                         let abs = self.function.expressions.append(Expression::Math { fun: MathFunction::Abs, arg, arg1: None, arg2: None, arg3: None }, span);
-                        let limit = self.function.expressions.append(Expression::Literal(Literal::F32(f32::MAX)), span);
-                        let below_limit = self.function.expressions.append(Expression::Binary { op: BinaryOperator::Less, left: abs, right: limit }, span);
+                        let limit = self.function.expressions.append(Expression::Literal(if self.float_width == 8 { Literal::F64(f64::MAX) } else { Literal::F32(f32::MAX) }), span);
+                        let below_limit = self.function.expressions.append(Expression::Binary { op: BinaryOperator::LessEqual, left: abs, right: limit }, span);
                         let false_value = self.function.expressions.append(Expression::Literal(Literal::Bool(false)), span);
                         self.function.expressions.append(Expression::Select { condition: same, accept: below_limit, reject: false_value }, span)
                     }
@@ -595,7 +608,7 @@ impl<'a> Lowerer<'a> {
             _ => return Err(ProgramSpirvError::UnsupportedStatement("CFG instruction is outside the pure F32 GPU subset".into())),
         };
         let result = match instruction {
-            CfgInstruction::ConstF32 { result, .. } | CfgInstruction::ConstU32 { result, .. }
+            CfgInstruction::ConstF32 { result, .. } | CfgInstruction::ConstF64 { result, .. } | CfgInstruction::ConstU32 { result, .. }
             | CfgInstruction::LoadUniform { result, .. } | CfgInstruction::LoadBuffer { result, .. }
             | CfgInstruction::GlobalId { result } | CfgInstruction::Binary { result, .. }
             | CfgInstruction::Unary { result, .. } | CfgInstruction::Select { result, .. } => *result,
@@ -610,6 +623,7 @@ impl<'a> Lowerer<'a> {
         let span = naga::Span::UNDEFINED;
         match expr {
             Expr::ConstF32(v) => Ok(self.function.expressions.append(Expression::Literal(Literal::F32(*v)), span)),
+            Expr::ConstF64(v) if self.float_width == 8 => Ok(self.function.expressions.append(Expression::Literal(Literal::F64(*v)), span)),
             Expr::ConstBool(v) => Ok(self.function.expressions.append(Expression::Literal(Literal::Bool(*v)), span)),
             Expr::ConstU32(v) => Ok(self.function.expressions.append(Expression::Literal(Literal::U32(*v)), span)),
             Expr::GlobalId => Ok(self.gid_x),
@@ -637,6 +651,9 @@ impl<'a> Lowerer<'a> {
                 Ok(value)
             }
             Expr::BinOp { op, lhs, rhs } => {
+                if self.float_width == 8 && *op == BinOp::Pow {
+                    return Err(ProgramSpirvError::UnsupportedExpression("F64 pow is not implemented".into()));
+                }
                 let left = self.lower_expr(lhs)?; let right = self.lower_expr(rhs)?;
                 let expression = match op {
                     BinOp::Min => Expression::Math { fun: MathFunction::Min, arg: left, arg1: Some(right), arg2: None, arg3: None },
@@ -663,6 +680,9 @@ impl<'a> Lowerer<'a> {
                 Ok(self.function.expressions.append(Expression::Compose { ty: self.vec3_ty, components: vec![x, y, z] }, span))
             }
             Expr::UnOp { op, arg } => {
+                if self.float_width == 8 && matches!(op, UnOp::Sin | UnOp::Cos | UnOp::Atan | UnOp::Ln) {
+                    return Err(ProgramSpirvError::UnsupportedExpression(format!("F64 {op:?} is not implemented")));
+                }
                 let arg = self.lower_expr(arg)?;
                 let expression = match op {
                     UnOp::Neg => Expression::Unary { op: naga::UnaryOperator::Negate, expr: arg },
@@ -676,8 +696,8 @@ impl<'a> Lowerer<'a> {
                     UnOp::IsFinite => {
                         let same = self.function.expressions.append(Expression::Binary { op: BinaryOperator::Equal, left: arg, right: arg }, span);
                         let abs = self.function.expressions.append(Expression::Math { fun: MathFunction::Abs, arg, arg1: None, arg2: None, arg3: None }, span);
-                        let limit = self.function.expressions.append(Expression::Literal(Literal::F32(f32::MAX)), span);
-                        let below_limit = self.function.expressions.append(Expression::Binary { op: BinaryOperator::Less, left: abs, right: limit }, span);
+                        let limit = self.function.expressions.append(Expression::Literal(if self.float_width == 8 { Literal::F64(f64::MAX) } else { Literal::F32(f32::MAX) }), span);
+                        let below_limit = self.function.expressions.append(Expression::Binary { op: BinaryOperator::LessEqual, left: abs, right: limit }, span);
                         let false_value = self.function.expressions.append(Expression::Literal(Literal::Bool(false)), span);
                         Expression::Select { condition: same, accept: below_limit, reject: false_value }
                     }
@@ -786,6 +806,28 @@ fn resource_slots_stmt(stmt: &Stmt) -> Vec<u32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn float64_module_uses_native_width_and_rejects_unsupported_math() {
+        use ucf_program::{BinOp, FunctionBuilder, ProgramBuilder};
+        let mut builder = FunctionBuilder::new("native_precision");
+        let initial = builder.emit_const_f64(16777216.0).unwrap();
+        let increment = builder.emit_const_f64(0.125).unwrap();
+        let result = builder.emit_binary(BinOp::Add, initial, increment).unwrap();
+        builder.return_value(result).unwrap();
+        let program = ProgramBuilder::new().entry(builder).unwrap().finish().unwrap();
+        let module = rspirv::dr::load_bytes(&super::emit_program_spirv(&program, "native_precision").unwrap()).unwrap();
+        assert!(module.types_global_values.iter().any(|instruction|
+            instruction.class.opcode == rspirv::spirv::Op::TypeFloat
+                && instruction.operands == vec![rspirv::dr::Operand::LiteralBit32(64)]));
+        let mut builder = FunctionBuilder::new("unsupported_math");
+        let base = builder.emit_const_f64(2.0).unwrap();
+        let exponent = builder.emit_const_f64(0.5).unwrap();
+        let result = builder.emit_binary(BinOp::Pow, base, exponent).unwrap();
+        builder.return_value(result).unwrap();
+        let program = ProgramBuilder::new().entry(builder).unwrap().finish().unwrap();
+        assert!(matches!(super::emit_program_spirv(&program, "unsupported_math"),
+            Err(super::ProgramSpirvError::UnsupportedExpression(_))));
+    }
     use super::*;
 
     #[test]

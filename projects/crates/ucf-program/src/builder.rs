@@ -151,6 +151,9 @@ impl StructuredFunctionBuilder {
     /// 构造常量表达式。
     pub fn const_f32(&self, value: f32) -> Expr { Expr::ConstF32(value) }
 
+    /// 构造 F64 常量，不经过 F32 中间值。
+    pub fn const_f64(&self, value: f64) -> Expr { Expr::ConstF64(value) }
+
     /// 构造无符号整数常量表达式。
     pub fn const_u32(&self, value: u32) -> Expr { Expr::ConstU32(value) }
 

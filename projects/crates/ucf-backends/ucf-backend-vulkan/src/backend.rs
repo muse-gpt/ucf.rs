@@ -38,6 +38,7 @@ pub struct VulkanBackend {
     command_pool: vk::CommandPool,
     /// Queue family supports `GRAPHICS` (required for Raster `draw=tri`).
     graphics: bool,
+    supports_float64: bool,
     buffers: BTreeMap<ResourceId, DeviceBuffer>,
     compute_pipelines: Vec<ComputePipelineCache>,
     strategies: WiredStrategies,
@@ -100,7 +101,10 @@ impl VulkanBackend {
             let qinfo = vk::DeviceQueueCreateInfo::default()
                 .queue_family_index(queue_family)
                 .queue_priorities(&priorities);
-            let dinfo = vk::DeviceCreateInfo::default().queue_create_infos(std::slice::from_ref(&qinfo));
+            let supports_float64 = instance.get_physical_device_features(physical).shader_float64 == vk::TRUE;
+            let enabled_features = vk::PhysicalDeviceFeatures::default().shader_float64(supports_float64);
+            let dinfo = vk::DeviceCreateInfo::default().queue_create_infos(std::slice::from_ref(&qinfo))
+                .enabled_features(&enabled_features);
             let device = instance
                 .create_device(physical, &dinfo, None)
                 .map_err(|e| map_backend_err(BackendError(format!("create_device: {e}"))))?;
@@ -128,6 +132,7 @@ impl VulkanBackend {
                 queue,
                 command_pool,
                 graphics,
+                supports_float64,
                 buffers: BTreeMap::new(),
                 compute_pipelines: Vec::new(),
                 strategies,
@@ -203,6 +208,23 @@ impl VulkanBackend {
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect())
+    }
+
+    /// 上传同质 F64 资源，尺寸必须精确匹配，不截断为 F32。
+    pub fn write_f64(&mut self, id: ResourceId, values: &[f64]) -> Result<()> {
+        let host = values.iter().flat_map(|value| value.to_le_bytes()).collect::<Vec<_>>();
+        expect_bytes(id, self.buf_bytes(id)?, host.len())?;
+        self.upload(id, &host)
+    }
+
+    /// 读回同质 F64 资源，拒绝不完整的八字节元素。
+    pub fn read_f64(&mut self, id: ResourceId) -> Result<Vec<f64>> {
+        let bytes = self.buf_bytes(id)?;
+        if bytes % 8 != 0 {
+            return Err(map_backend_err(BackendError(format!("resource {} is not an F64 buffer", id.0))));
+        }
+        let host = self.readback(id, bytes)?;
+        Ok(host.chunks_exact(8).map(|value| f64::from_le_bytes(value.try_into().unwrap())).collect())
     }
 
     /// Download a device buffer as raw bytes (e.g. `R8G8B8A8` raster readback).
@@ -491,14 +513,19 @@ impl VulkanBackend {
             ))));
         }
         let output = resource_param(task, "output").map_err(map_backend_err)?;
+        let float64 = program.entry_fn().is_some_and(|entry| entry.ret == ucf_program::Ty::f64());
+        if float64 && !self.supports_float64 {
+            return Err(map_backend_err(BackendError("Vulkan device does not support ProgramFloat64".into())));
+        }
+        let scalar_bytes = if float64 { 8 } else { 4 };
         let bytes = self.buf_bytes(output)?;
-        if bytes == 0 || bytes % 4 != 0 {
+        if bytes == 0 || bytes % scalar_bytes != 0 {
             return Err(map_backend_err(BackendError(format!(
-                "generic UCF output resource {} must contain f32 elements",
+                "generic UCF output resource {} must contain {scalar_bytes}-byte scalar elements",
                 output.0
             ))));
         }
-        let output_count = u32::try_from(bytes / 4).map_err(|_| {
+        let output_count = u32::try_from(bytes / scalar_bytes).map_err(|_| {
             map_backend_err(BackendError("generic UCF output element count exceeds u32".into()))
         })?;
         let dispatch_count = match task.dispatch {
@@ -539,25 +566,35 @@ impl VulkanBackend {
                 let buffer = self.buffers.get(&resource).ok_or_else(|| {
                     map_backend_err(BackendError(format!("generic UCF input resource {} is not allocated", resource.0)))
                 })?;
+                if buffer.bytes % scalar_bytes != 0 {
+                    return Err(map_backend_err(BackendError(format!(
+                        "generic UCF resource {} must contain {scalar_bytes}-byte scalar elements", resource.0))));
+                }
                 dispatch_buffers.push(buffer.buffer);
             }
         }
         let spirv = emit_program_spirv(&program, "ucf_program_main")
             .map_err(|e| map_emit_err(e.to_string()))?;
-        let mut push = [0u8; 68];
+        let mut push = vec![0u8; if float64 { 128 } else { 68 }];
         push[0..4].copy_from_slice(&dispatch_count.to_ne_bytes());
         for slot in 0..16u32 {
             if let Some(value) = task.params.get(&format!("uniform_{slot}")) {
                 let value = match value {
-                    ParamValue::F64(value) => *value as f32,
-                    ParamValue::I64(value) => *value as f32,
+                    ParamValue::F64(value) => *value,
+                    ParamValue::I64(value) => *value as f64,
                     _ => return Err(map_backend_err(BackendError(format!(
                         "uniform_{slot} must be numeric"
                     )))),
                 };
-                let offset = 4 + (slot as usize) * 4;
-                push[offset..offset + 4]
-                    .copy_from_slice(&value.to_ne_bytes());
+                let offset = scalar_bytes * (slot as usize + 1);
+                if float64 {
+                    if slot >= 15 {
+                        return Err(map_backend_err(BackendError("F64 push constants support at most fifteen uniforms".into())));
+                    }
+                    push[offset..offset + 8].copy_from_slice(&value.to_ne_bytes());
+                } else {
+                    push[offset..offset + 4].copy_from_slice(&(value as f32).to_ne_bytes());
+                }
             }
         }
         self.dispatch_compute(
@@ -1253,12 +1290,13 @@ impl Backend for VulkanBackend {
     }
 
     fn features(&self) -> FeatureSet {
-        FeatureSet::new()
+        let features = FeatureSet::new()
             .with(Feature::ProgramFloat32)
             .with(Feature::Bindless)
             .with(Feature::DescriptorBuffer)
             .with(Feature::DynamicRendering)
-            .with(Feature::Synchronization2)
+            .with(Feature::Synchronization2);
+        if self.supports_float64 { features.with(Feature::ProgramFloat64) } else { features }
     }
 
     fn prepare(&mut self, graph: &Graph) -> Result<()> {
