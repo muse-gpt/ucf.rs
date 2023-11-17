@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use ash::vk;
 use ash::{Device, Entry, Instance};
@@ -28,6 +30,34 @@ struct ComputePipelineCache {
     pipeline: vk::Pipeline,
 }
 
+struct LoweredProgram {
+    float64: bool,
+    max_resource: Option<u32>,
+    spirv: Vec<u8>,
+}
+
+struct ProgramCacheEntry {
+    version: u32,
+    hash: u64,
+    body: String,
+    lowered: Arc<LoweredProgram>,
+}
+
+/// 通用程序解析与 lowering 缓存统计，不代表任务已经成功执行。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProgramCacheStats {
+    /// 正文、版本与哈希完全匹配的缓存命中次数。
+    pub hits: u64,
+    /// 必须重新解析及验证的请求次数，包含失败请求。
+    pub misses: u64,
+    /// 成功完成的通用程序 lowering 次数。
+    pub lowerings: u64,
+    /// 成功 lowering 的累计主机耗时，不包含 GPU 执行。
+    pub lowering_time: Duration,
+    /// 当前缓存中的程序数量，最多十六个。
+    pub entries: usize,
+}
+
 /// Vulkan compute / graphics backend with device-resident buffers.
 pub struct VulkanBackend {
     _entry: Entry,
@@ -41,6 +71,8 @@ pub struct VulkanBackend {
     supports_float64: bool,
     buffers: BTreeMap<ResourceId, DeviceBuffer>,
     compute_pipelines: Vec<ComputePipelineCache>,
+    program_cache: Vec<ProgramCacheEntry>,
+    program_cache_stats: ProgramCacheStats,
     strategies: WiredStrategies,
     /// Last descriptor path label taken by a submit (for thin-gate assertions).
     last_descriptor_path: &'static str,
@@ -135,6 +167,8 @@ impl VulkanBackend {
                 supports_float64,
                 buffers: BTreeMap::new(),
                 compute_pipelines: Vec::new(),
+                program_cache: Vec::new(),
+                program_cache_stats: ProgramCacheStats::default(),
                 strategies,
                 last_descriptor_path: "",
                 last_sync_path: "",
@@ -146,6 +180,11 @@ impl VulkanBackend {
     /// Degrade-chain strategies resolved when the backend opened.
     pub fn strategies(&self) -> WiredStrategies {
         self.strategies
+    }
+
+    /// 返回程序编译缓存统计，不能代替执行与 readback 证明。
+    pub fn program_cache_stats(&self) -> ProgramCacheStats {
+        ProgramCacheStats { entries: self.program_cache.len(), ..self.program_cache_stats }
     }
 
     /// Descriptor path label from the last submit that bound descriptors.
@@ -491,7 +530,7 @@ impl VulkanBackend {
         )
     }
 
-    fn run_program_task(&mut self, task: &TaskNode) -> Result<()> {
+    fn lowered_program(&mut self, task: &TaskNode) -> Result<Arc<LoweredProgram>> {
         let (version, expected_hash, body) = match task.params.get("program") {
             Some(ParamValue::Program { version, hash, body }) => (*version, *hash, body),
             _ => return Err(map_backend_err(BackendError(
@@ -503,6 +542,15 @@ impl VulkanBackend {
                 "unsupported generic UCF program version {version}"
             ))));
         }
+        if let Some(index) = self.program_cache.iter().position(|entry|
+            entry.version == version && entry.hash == expected_hash && entry.body == *body) {
+            self.program_cache_stats.hits += 1;
+            let entry = self.program_cache.remove(index);
+            let lowered = Arc::clone(&entry.lowered);
+            self.program_cache.push(entry);
+            return Ok(lowered);
+        }
+        self.program_cache_stats.misses += 1;
         let program: Program = serde_json::from_str(body).map_err(|e| {
             map_backend_err(BackendError(format!("invalid generic UCF program body: {e}")))
         })?;
@@ -512,11 +560,35 @@ impl VulkanBackend {
                 "generic UCF program hash mismatch: expected {expected_hash}, got {actual_hash}"
             ))));
         }
-        let output = resource_param(task, "output").map_err(map_backend_err)?;
         let float64 = program.entry_fn().is_some_and(|entry| entry.ret == ucf_program::Ty::f64());
         if float64 && !self.supports_float64 {
             return Err(map_backend_err(BackendError("Vulkan device does not support ProgramFloat64".into())));
         }
+        let max_resource = program
+            .functions
+            .iter()
+            .flat_map(|function| function.body.iter())
+            .map(ucf_program_resource_slots)
+            .collect::<std::result::Result<Vec<_>, BackendError>>()
+            .map_err(map_backend_err)?
+            .into_iter()
+            .flatten()
+            .max();
+        let started = Instant::now();
+        let spirv = emit_program_spirv(&program, "ucf_program_main")
+            .map_err(|e| map_emit_err(e.to_string()))?;
+        self.program_cache_stats.lowering_time += started.elapsed();
+        self.program_cache_stats.lowerings += 1;
+        let lowered = Arc::new(LoweredProgram { float64, max_resource, spirv });
+        if self.program_cache.len() == 16 { self.program_cache.remove(0); }
+        self.program_cache.push(ProgramCacheEntry { version, hash: expected_hash, body: body.clone(), lowered: Arc::clone(&lowered) });
+        Ok(lowered)
+    }
+
+    fn run_program_task(&mut self, task: &TaskNode) -> Result<()> {
+        let lowered = self.lowered_program(task)?;
+        let output = resource_param(task, "output").map_err(map_backend_err)?;
+        let float64 = lowered.float64;
         let scalar_bytes = if float64 { 8 } else { 4 };
         let bytes = self.buf_bytes(output)?;
         if bytes == 0 || bytes % scalar_bytes != 0 {
@@ -544,18 +616,8 @@ impl VulkanBackend {
                 "generic UCF dispatch count {dispatch_count} exceeds output capacity {output_count}"
             ))));
         }
-        let max_resource = program
-            .functions
-            .iter()
-            .flat_map(|function| function.body.iter())
-            .map(ucf_program_resource_slots)
-            .collect::<std::result::Result<Vec<_>, BackendError>>()
-            .map_err(map_backend_err)?
-            .into_iter()
-            .flatten()
-            .max();
         let mut dispatch_buffers = vec![self.buffers.get(&output).unwrap().buffer];
-        if let Some(max_resource) = max_resource {
+        if let Some(max_resource) = lowered.max_resource {
             for slot in 0..=max_resource {
                 let key = format!("buffer_{slot}");
                 let resource = match task.params.get(&key) {
@@ -573,8 +635,6 @@ impl VulkanBackend {
                 dispatch_buffers.push(buffer.buffer);
             }
         }
-        let spirv = emit_program_spirv(&program, "ucf_program_main")
-            .map_err(|e| map_emit_err(e.to_string()))?;
         let mut push = vec![0u8; if float64 { 128 } else { 68 }];
         push[0..4].copy_from_slice(&dispatch_count.to_ne_bytes());
         for slot in 0..16u32 {
@@ -598,7 +658,7 @@ impl VulkanBackend {
             }
         }
         self.dispatch_compute(
-            &spirv,
+            &lowered.spirv,
             "ucf_program_main",
             &dispatch_buffers,
             &push,

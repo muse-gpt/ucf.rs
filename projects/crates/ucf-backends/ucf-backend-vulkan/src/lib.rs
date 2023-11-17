@@ -4,4 +4,4 @@
 mod backend;
 mod params;
 
-pub use backend::VulkanBackend;
+pub use backend::{ProgramCacheStats, VulkanBackend};
