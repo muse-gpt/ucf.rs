@@ -373,6 +373,19 @@ impl CpuInterpreter {
         if matches!((&l, &r), (Value::U32(_), Value::U32(0))) && matches!(op, BinOp::Div | BinOp::Mod) {
             return Err(ProgramError::DivideByZero);
         }
+        if let (Value::U32(left), Value::U32(right)) = (&l, &r) {
+            let result = match op {
+                BinOp::Add => Some(left.wrapping_add(*right)),
+                BinOp::Sub => Some(left.wrapping_sub(*right)),
+                BinOp::Mul => Some(left.wrapping_mul(*right)),
+                BinOp::Div => Some(left / right),
+                BinOp::Min => Some((*left).min(*right)),
+                BinOp::Max => Some((*left).max(*right)),
+                BinOp::Mod => Some(left % right),
+                _ => None,
+            };
+            if let Some(result) = result { return Ok(Value::U32(result)); }
+        }
         if let (Value::F32(left), Value::F32(right)) = (&l, &r) {
             let result = match op {
                 BinOp::Add => Some(*left + *right),
