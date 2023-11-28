@@ -1,0 +1,16 @@
+[package]
+name = "hardware-scheduler"
+description = "UCF scheduler: placement, dependency resolution, and backend dispatch"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+hardware-capability = { workspace = true }
+hardware-ir = { workspace = true }
+hardware-optimize = { workspace = true }

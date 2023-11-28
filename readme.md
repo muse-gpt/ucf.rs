@@ -13,21 +13,21 @@ Stage 0 skeleton: IR, scheduler, runtime, and backend stubs (CUDA / DX12 / Vulka
 ```text
 projects/crates/
 ├── ucf/              # Public facade (application entry)
-├── ucf-types/        # Shared value types
-├── ucf-ir/           # Graph IR
-├── ucf-capability/   # Feature detection
-├── ucf-optimize/     # Optimization descriptors
-├── ucf-scheduler/    # Scheduler + Backend trait
-├── ucf-emitter/      # Built-in PTX / DXIL emitter
-├── ucf-runtime/      # Runtime
+├── hardware-types/        # Shared value types
+├── hardware-ir/           # Graph IR
+├── hardware-capability/   # Feature detection
+├── hardware-optimize/     # Optimization descriptors
+├── hardware-scheduler/    # Scheduler + Backend trait
+├── hardware-emitter/      # Built-in PTX / DXIL emitter
+├── hardware-runtime/      # Runtime
 └── ucf-backends/
-    ├── ucf-backend-cuda/
-    ├── ucf-backend-dx12/
-    ├── ucf-backend-vulkan/
-    └── ucf-backend-rocm/
+    ├── hardware-backend-cuda/
+    ├── hardware-backend-dx12/
+    ├── hardware-backend-vulkan/
+    └── hardware-backend-rocm/
 
 projects/bindings/
-    ucf-wasm/           # Wasm cdylib（Web CPU 应用契约；TS 加载器由下游产品封装）
+    hardware-wasm/           # Wasm cdylib（Web CPU 应用契约；TS 加载器由下游产品封装）
 
 projects/examples/      # Runnable IR examples (one crate per graph, src/main.rs)
 ```
@@ -44,13 +44,13 @@ cargo run -p example-deep-learning-attention
 ```bash
 cargo build
 cargo test
-cargo run -p ucf-runtime --example matmul_cuda --features cuda
+cargo run -p hardware-runtime --example matmul_cuda --features cuda
 ```
 
 Applications should depend on `ucf`:
 
 ```toml
-ucf = { path = "../projects/crates/ucf", features = ["cuda", "dx12"] }
+hardware = { path = "../projects/crates/ucf", features = ["cuda", "dx12"] }
 ```
 
 ## License

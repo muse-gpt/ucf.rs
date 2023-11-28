@@ -1,0 +1,21 @@
+[package]
+name = "hardware-backend-rocm"
+description = "ROCm / HIP backend for UCF (HSACO via hardware-emitter, no hiprtc)"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+libloading = { workspace = true }
+hardware-capability = { workspace = true }
+hardware-emitter = { workspace = true }
+hardware-ir = { workspace = true }
+hardware-scheduler = { workspace = true }
+hardware-types = { workspace = true }
+
+[dev-dependencies]
+hardware-backend-cpu = { workspace = true }
+hardware-runtime = { workspace = true }

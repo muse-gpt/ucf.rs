@@ -1,0 +1,20 @@
+[package]
+name = "hardware-backend-cpu"
+description = "Host CPU reference backend for UCF (Copy / Fill / MatMul)"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde_json = { workspace = true }
+hardware-capability = { workspace = true }
+hardware-ir = { workspace = true }
+hardware-program = { workspace = true }
+hardware-scheduler = { workspace = true }
+hardware-types = { workspace = true }
+
+[dev-dependencies]
+hardware-runtime = { workspace = true }

@@ -12,4 +12,4 @@ name = "example-exotic-hardware-fpga-accel"
 path = "src/main.rs"
 
 [dependencies]
-ucf = { workspace = true }
+hardware = { workspace = true }

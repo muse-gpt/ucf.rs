@@ -12,4 +12,4 @@ name = "example-image-video-image-pipeline"
 path = "src/main.rs"
 
 [dependencies]
-ucf = { workspace = true }
+hardware = { workspace = true }

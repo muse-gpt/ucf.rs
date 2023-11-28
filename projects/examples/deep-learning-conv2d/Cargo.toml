@@ -12,4 +12,4 @@ name = "example-deep-learning-conv2d"
 path = "src/main.rs"
 
 [dependencies]
-ucf = { workspace = true }
+hardware = { workspace = true }

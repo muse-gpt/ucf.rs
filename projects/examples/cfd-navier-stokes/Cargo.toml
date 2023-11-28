@@ -12,4 +12,4 @@ name = "example-cfd-navier-stokes"
 path = "src/main.rs"
 
 [dependencies]
-ucf = { workspace = true }
+hardware = { workspace = true }

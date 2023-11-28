@@ -1,0 +1,38 @@
+[package]
+name = "hardware"
+description = "Unified Compute Fabric - public facade"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[features]
+default = ["cpu"]
+cpu = ["dep:hardware-backend-cpu"]
+cuda = ["dep:hardware-backend-cuda"]
+dx12 = ["dep:hardware-backend-dx12"]
+vulkan = ["dep:hardware-backend-vulkan"]
+rocm = ["dep:hardware-backend-rocm"]
+
+[dependencies]
+hardware-types = { workspace = true }
+hardware-ir = { workspace = true }
+hardware-capability = { workspace = true }
+hardware-optimize = { workspace = true }
+hardware-scheduler = { workspace = true }
+hardware-runtime = { workspace = true }
+hardware-backend-cpu = { workspace = true, optional = true }
+hardware-backend-cuda = { workspace = true, optional = true }
+hardware-backend-dx12 = { workspace = true, optional = true }
+hardware-backend-vulkan = { workspace = true, optional = true }
+hardware-backend-rocm = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+hardware-backend-cpu = { workspace = true }
+hardware-backend-cuda = { workspace = true }
+hardware-backend-dx12 = { workspace = true }
+hardware-backend-vulkan = { workspace = true }
+hardware-backend-rocm = { workspace = true }

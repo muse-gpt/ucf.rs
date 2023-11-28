@@ -1,0 +1,23 @@
+[package]
+name = "hardware-backend-vulkan"
+description = "Vulkan backend for UCF (SPIR-V via hardware-emitter)"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+ash = { workspace = true }
+hardware-capability = { workspace = true }
+hardware-emitter = { workspace = true }
+hardware-program = { workspace = true }
+hardware-ir = { workspace = true }
+hardware-scheduler = { workspace = true }
+hardware-types = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+hardware-backend-cpu = { workspace = true }
+hardware-runtime = { workspace = true }
