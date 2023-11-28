@@ -16,6 +16,17 @@ members = [
     "projects/hardware/hardware.backends/hardware.backend.vulkan",
     "projects/hardware/hardware.backends/hardware.backend.rocm",
     "projects/hardware/bindings/hardware.wasm",
+    "projects/geometry/geometry",
+    "projects/geometry/geometry.types",
+    "projects/geometry/geometry.motion",
+    "projects/media/media",
+    "projects/media/media.types",
+    "projects/media/media.scene",
+    "projects/media/media.raster",
+    "projects/media/media.text",
+    "projects/media/media.codec",
+    "projects/media/media.audio",
+    "projects/media/media.render",
     "projects/examples/cfd-navier-stokes",
     "projects/examples/cfd-lbm",
     "projects/examples/simulation-rigid-body",
@@ -59,6 +70,17 @@ default-members = [
     "projects/hardware/hardware.backends/hardware.backend.dx12",
     "projects/hardware/hardware.backends/hardware.backend.vulkan",
     "projects/hardware/hardware.backends/hardware.backend.rocm",
+    "projects/geometry/geometry",
+    "projects/geometry/geometry.types",
+    "projects/geometry/geometry.motion",
+    "projects/media/media",
+    "projects/media/media.types",
+    "projects/media/media.scene",
+    "projects/media/media.raster",
+    "projects/media/media.text",
+    "projects/media/media.codec",
+    "projects/media/media.audio",
+    "projects/media/media.render",
 ]
 exclude = [
     "projects/.DS_Store",
@@ -75,6 +97,7 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
+fontdue = "0.9"
 libloading = "0.8"
 ash = "0.38"
 naga = { version = "24", default-features = false, features = ["wgsl-in", "spv-out"] }
@@ -86,9 +109,26 @@ windows = { version = "0.58", features = [
     "Win32_Graphics_Direct3D12",
     "Win32_Graphics_Dxgi",
     "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Imaging",
+    "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
     "Win32_Security",
+    "Win32_System_Com",
     "Win32_System_Threading",
 ] }
+
+geometry = { path = "projects/geometry/geometry" }
+geometry-types = { path = "projects/geometry/geometry.types" }
+geometry-motion = { path = "projects/geometry/geometry.motion" }
+
+media = { path = "projects/media/media" }
+media-types = { path = "projects/media/media.types" }
+media-scene = { path = "projects/media/media.scene" }
+media-raster = { path = "projects/media/media.raster" }
+media-text = { path = "projects/media/media.text" }
+media-codec = { path = "projects/media/media.codec" }
+media-audio = { path = "projects/media/media.audio" }
+media-render = { path = "projects/media/media.render" }
 
 hardware = { path = "projects/hardware/hardware" }
 hardware-types = { path = "projects/hardware/hardware.types" }

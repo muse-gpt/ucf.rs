@@ -1,0 +1,16 @@
+[package]
+name = "media-codec"
+description = "Host codecs: image and video decode, audio decode and Media Foundation encoding"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+media-types = { workspace = true }
+media-raster = { workspace = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true }

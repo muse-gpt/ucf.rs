@@ -1,0 +1,20 @@
+[package]
+name = "media-render"
+description = "Frame orchestration: paint a project into frames, mix audio and push both to the encoder"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+geometry = { workspace = true }
+media-types = { workspace = true }
+media-scene = { workspace = true }
+media-raster = { workspace = true }
+media-text = { workspace = true }
+media-codec = { workspace = true }
+media-audio = { workspace = true }

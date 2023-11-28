@@ -1,0 +1,16 @@
+[package]
+name = "media-text"
+description = "Text layout and glyph raster: fonts, measure, blocks, staggered reveals and code lines"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+fontdue = { workspace = true }
+geometry = { workspace = true }
+media-raster = { workspace = true }
+media-scene = { workspace = true }
+media-types = { workspace = true }

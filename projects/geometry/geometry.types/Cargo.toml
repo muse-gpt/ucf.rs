@@ -1,0 +1,11 @@
+[package]
+name = "geometry-types"
+description = "Geometry value types: points, sizes, rects, colors, affine transforms, paths and cameras"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]

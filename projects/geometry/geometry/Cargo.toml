@@ -1,0 +1,13 @@
+[package]
+name = "geometry"
+description = "Geometry facade: value types, transforms, cameras and motion curves"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+geometry-types = { workspace = true }
+geometry-motion = { workspace = true }
