@@ -1,0 +1,13 @@
+[package]
+name = "media-canvas"
+description = "Canvas building blocks: layer stacks, blend modes and brushes"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+geometry = { workspace = true }
+media-raster = { workspace = true }

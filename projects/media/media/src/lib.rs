@@ -4,6 +4,7 @@
 //! stay independently usable, and downstream products depend on this facade.
 
 pub use media_audio as audio;
+pub use media_canvas as canvas;
 pub use media_codec as codec;
 pub use media_raster as raster;
 pub use media_render as render;
