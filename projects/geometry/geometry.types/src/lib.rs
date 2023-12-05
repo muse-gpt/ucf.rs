@@ -9,7 +9,7 @@ pub mod geom;
 pub mod path;
 pub mod transform;
 
-pub use color::{Rgba, parse, parse_or};
+pub use color::{LinearRgb, Rgba, parse, parse_or};
 pub use geom::{Rect, Size, Vec2, distance, lerp};
 pub use path::{centroid, point_in_polygon, smooth_polyline};
 pub use transform::{Affine2, Camera};
