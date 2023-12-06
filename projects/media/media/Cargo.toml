@@ -17,3 +17,4 @@ media-text = { workspace = true }
 media-codec = { workspace = true }
 media-audio = { workspace = true }
 media-render = { workspace = true }
+media-post = { workspace = true }

@@ -28,6 +28,7 @@ members = [
     "projects/media/media.codec",
     "projects/media/media.audio",
     "projects/media/media.render",
+    "projects/media/media.post",
     "projects/examples/cfd-navier-stokes",
     "projects/examples/cfd-lbm",
     "projects/examples/simulation-rigid-body",
@@ -83,6 +84,7 @@ default-members = [
     "projects/media/media.codec",
     "projects/media/media.audio",
     "projects/media/media.render",
+    "projects/media/media.post",
 ]
 exclude = [
     "projects/.DS_Store",
@@ -132,6 +134,7 @@ media-text = { path = "projects/media/media.text" }
 media-codec = { path = "projects/media/media.codec" }
 media-audio = { path = "projects/media/media.audio" }
 media-render = { path = "projects/media/media.render" }
+media-post = { path = "projects/media/media.post" }
 
 hardware = { path = "projects/hardware/hardware" }
 hardware-types = { path = "projects/hardware/hardware.types" }
