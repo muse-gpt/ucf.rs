@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "chain-buffer-texture",
+    "chain-buffers",
+    "chain-copy-task",
+    "chain-cross-executor",
+    "chain-hbm-executors",
+    "chain-host-executors",
+    "chain-inferred-raster",
+    "chain-matmul",
+    "chain-raster",
+    "chain-render-present",
+    "chain-streaming-qos",
+    "chain-tensors",
+    "chain-textures",
+    "independent-nodes",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MPL-2.0"
+authors = ["Aster <192607617@qq.com>"]
+publish = false
+
+[workspace.dependencies]
+hardware = { path = "../../projects/hardware/hardware" }

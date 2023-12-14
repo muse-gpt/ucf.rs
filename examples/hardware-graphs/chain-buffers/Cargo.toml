@@ -1,0 +1,15 @@
+[package]
+name = "chain-buffers"
+description = "Hardware graph dry-run example: linear chain of custom compute tasks over Vram buffers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "chain-buffers"
+path = "src/main.rs"
+
+[dependencies]
+hardware = { workspace = true }

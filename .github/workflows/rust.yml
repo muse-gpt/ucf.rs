@@ -39,3 +39,26 @@ jobs:
 
       - name: cargo build --release
         run: cargo build --release --workspace
+
+  # Examples are a separate workspace and only validate graph build + dry-run.
+  # This job is not evidence of real CPU/GPU execution.
+  examples:
+    name: Hardware graph examples (dry-run only)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/hardware-graphs
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo build examples
+        run: cargo build --workspace
+
+      - name: cargo run examples (graph build + dry-run only)
+        run: |
+          for pkg in $(cargo metadata --format-version 1 --no-deps | jq -r '.packages[].name'); do
+            cargo run -p "$pkg"
+          done

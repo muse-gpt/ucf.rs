@@ -20,16 +20,18 @@ projects/
 │   ├── hardware.runtime/
 │   ├── hardware.backends/  # cpu / cuda / dx12 / vulkan / rocm
 │   └── bindings/hardware.wasm
-├── media/              # 媒体：场景 IR、光栅、文字、编解码、音频、逐帧编排
-│   ├── media/              # 门面
-│   ├── media.types/
-│   ├── media.scene/
-│   ├── media.raster/
-│   ├── media.text/
-│   ├── media.codec/
-│   ├── media.audio/
-│   └── media.render/
-└── examples/           # 可运行的 IR 示例（每图一个 crate）
+└── media/              # 媒体：场景 IR、光栅、文字、编解码、音频、逐帧编排
+    ├── media/              # 门面
+    ├── media.types/
+    ├── media.scene/
+    ├── media.raster/
+    ├── media.text/
+    ├── media.codec/
+    ├── media.audio/
+    └── media.render/
+
+examples/
+└── hardware-graphs/    # 独立示例 workspace：只演示图构建与 dry-run，不证明硬件执行
 ```
 
 目录用点分层（`media.raster`），Cargo package 名用连字符（`media-raster`）。三个门面 crate 只做再导出，不放业务逻辑。
@@ -45,7 +47,8 @@ projects/
 ```bash
 cargo check --workspace --all-targets
 cargo test -p media-render
-cargo run -p example-graphics-raster
+# 示例是独立 workspace，只验证图构建与 dry-run
+cargo run -p chain-raster --manifest-path examples/hardware-graphs/Cargo.toml
 ```
 
 下游依赖：
