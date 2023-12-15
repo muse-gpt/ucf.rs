@@ -11,7 +11,7 @@
 
 - 只做像素运算，不做文档、工具状态、UI。
 - 文档模型归各产品仓：OpenPaint 是矢量，OpenPhoto 是栅格图层，OpenPixel 是索引色，OpenVoxel 是体素。
-- 合成读的是 `media.raster::Frame`，不引入新的帧类型。
+- 合成读的是 `media.image::Frame`，绘制用 `media.raster` 的 `Paint`，不引入新的帧类型。
 
 ## 约定
 

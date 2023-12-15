@@ -3,8 +3,7 @@
 //! HDR 后处理：多尺度泛光与色调映射（UCF `ton_bloom` / `ton_tone_map` CPU 参考）。
 
 use geometry_types::LinearRgb;
-
-use crate::framebuffer::{Framebuffer, FramebufferEncoding};
+use media_image::{Framebuffer, FramebufferEncoding};
 
 /// 默认曝光乘子（线性 HDR，在色调映射之前应用）。
 pub const DEFAULT_EXPOSURE: f64 = 0.82;
@@ -180,6 +179,21 @@ pub fn apply_post_process(fb: &mut Framebuffer, bloom: bool) {
         bloom_pass(fb, 0.85, 0.35);
     }
     apply_tone_map(fb);
+}
+
+/// 编码为 RGBA8：线性 HDR 帧会先执行一次色调映射。
+#[must_use]
+pub fn to_rgba8(fb: &Framebuffer) -> Vec<u8> {
+    let mut out = Vec::with_capacity(fb.pixels.len() * 4);
+    for px in &fb.pixels {
+        let display = match fb.encoding {
+            FramebufferEncoding::LinearHdr => tone_map_rgb(*px),
+            FramebufferEncoding::Display => *px,
+        };
+        let [r, g, b] = display.to_u8();
+        out.extend_from_slice(&[r, g, b, 255]);
+    }
+    out
 }
 
 #[cfg(test)]

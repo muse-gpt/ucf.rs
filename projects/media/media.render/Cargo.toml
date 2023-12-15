@@ -14,6 +14,7 @@ serde_json = { workspace = true }
 geometry = { workspace = true }
 media-types = { workspace = true }
 media-scene = { workspace = true }
+media-image = { workspace = true }
 media-raster = { workspace = true }
 media-text = { workspace = true }
 media-codec = { workspace = true }

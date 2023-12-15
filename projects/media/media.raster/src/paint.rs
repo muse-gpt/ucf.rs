@@ -1,131 +1,151 @@
-//! Software rasterizer: one RGBA8 framebuffer plus the primitives the scene
-//! vocabulary needs. Everything here is plain integer/floating math; there is
+//! Software rasterizer: paint operations on the `Frame` storage owned by
+//! `media.image`. Everything here is plain integer/floating math; there is
 //! no GPU and no external imaging library.
 
 use geometry::Rgba;
-use media_scene::Fit;
+use media_image::{Bitmap, Fit, Frame};
 use media_types::hash;
 
-/// A decoded RGBA8 image, decoupled from whatever decoded it.
-pub struct Bitmap {
-    pub width: u32,
-    pub height: u32,
-    pub rgba: Vec<u8>,
+/// Paint semantics for an RGBA8 frame: blending, primitives, image placement
+/// and camera resampling. The pixel storage itself lives in `media.image`.
+pub trait Paint {
+    /// Source-over blend of one pixel, honoring the active clip.
+    fn blend(&mut self, x: u32, y: u32, c: Rgba);
+
+    /// Additive blend of one pixel (light, glow, overlays).
+    fn add_pixel(&mut self, x: u32, y: u32, c: Rgba);
+
+    /// Paints a solid color everywhere.
+    fn fill(&mut self, c: Rgba);
+
+    /// Paints a vertical gradient through the given color stops (evenly spaced).
+    fn v_gradient(&mut self, stops: &[Rgba]);
+
+    /// Paints a radial gradient from `center` color to `edge` color.
+    fn radial(&mut self, center: Rgba, edge: Rgba);
+
+    /// Source-over rectangle. Coordinates are clamped to the frame.
+    fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Rgba);
+
+    /// Rounded rectangle with a corner radius in pixels.
+    fn round_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, c: Rgba);
+
+    /// Camera transform: samples `src` around `focus` at `zoom` and optional
+    /// rotation, then writes the result into this frame. Used to push, pull and
+    /// pan a whole scene like a real lens.
+    fn resample_from(&mut self, src: &Frame, zoom: f32, focus: [f32; 2], rotate_deg: f32);
+
+    /// Paints a soft-edged band across the frame at `angle` degrees.
+    ///
+    /// Falloff is gaussian so the band reads as light in the air rather than as
+    /// a painted stripe.
+    fn band(&mut self, center_y: f32, angle_deg: f32, thickness: f32, c: Rgba);
+
+    /// Sprinkles deterministic grain; `seed` changes per frame.
+    fn grain(&mut self, density: u32, strength: f32, seed: u32);
+
+    /// Fills a closed polygon with 4x vertical supersampling for soft edges.
+    ///
+    /// Coverage is accumulated per pixel and composited once, so a solid fill
+    /// stays solid instead of stacking four translucent passes.
+    fn fill_polygon(&mut self, points: &[[f32; 2]], c: Rgba, additive: bool);
+
+    /// Strokes a polyline, optionally only the first `progress` of its length.
+    fn stroke_polyline(&mut self, points: &[[f32; 2]], width: f32, c: Rgba, progress: f32, additive: bool);
+
+    /// Ring or disc.
+    fn circle(&mut self, cx: f32, cy: f32, radius: f32, c: Rgba, stroke: Option<f32>);
+
+    /// Straight line with thickness.
+    fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32, c: Rgba);
+
+    /// Additive soft glow dot for star fields and highlights.
+    fn glow(&mut self, cx: f32, cy: f32, radius: f32, c: Rgba);
+
+    /// Draws `bitmap` into the box `(x, y, w, h)` honoring `fit`.
+    ///
+    /// `alpha` scales the source alpha; `radius` clips the result to rounded
+    /// corners (0 draws a plain rectangle).
+    fn draw_bitmap(&mut self, bitmap: &Bitmap, x: f32, y: f32, w: f32, h: f32, fit: Fit, alpha: f32, radius: f32);
+
+    /// Deterministic star field: hash-based positions, sine twinkle, slow drift.
+    fn starfield(&mut self, count: u32, tint: Rgba, drift_px_per_sec: f32, twinkle: f32, seconds: f32);
+
+    /// Darkens the frame edges; `vignette` holds one alpha byte per pixel.
+    fn apply_vignette(&mut self, factor: &[u8]);
 }
 
-impl Bitmap {
-    #[must_use]
-    pub fn new(width: u32, height: u32, rgba: Vec<u8>) -> Self {
-        Self { width, height, rgba }
+#[inline]
+fn inside_clip(frame: &Frame, x: u32, y: u32) -> bool {
+    match frame.clip() {
+        None => true,
+        Some([x0, y0, x1, y1]) => x >= x0 && x < x1 && y >= y0 && y < y1,
     }
+}
 
-    /// Converts a BGRA8 buffer (the layout MF hands back) into RGBA8.
-    ///
-    /// MF's RGB32 has no alpha channel, so the fourth byte is undefined and is
-    /// replaced with full opacity.
-    #[must_use]
-    pub fn from_bgra(width: u32, height: u32, bgra: &[u8], stride: usize) -> Self {
-        let mut rgba = vec![0u8; (width as usize) * (height as usize) * 4];
-        for y in 0..height as usize {
-            let src = y * stride;
-            let dst = y * (width as usize) * 4;
-            for x in 0..width as usize {
-                let s = src + x * 4;
-                if s + 3 >= bgra.len() {
-                    break;
+#[inline]
+fn set_pixel(frame: &mut Frame, x: u32, y: u32, c: Rgba) {
+    let i = ((y * frame.width + x) as usize) * 4;
+    frame.pixels[i] = c.0[0];
+    frame.pixels[i + 1] = c.0[1];
+    frame.pixels[i + 2] = c.0[2];
+    frame.pixels[i + 3] = c.0[3];
+}
+
+#[inline]
+fn add(frame: &mut Frame, x: u32, y: u32, c: Rgba) {
+    let i = ((y * frame.width + x) as usize) * 4;
+    for k in 0..3 {
+        let v = frame.pixels[i + k] as u32 + (c.0[k] as u32 * c.0[3] as u32 / 255);
+        frame.pixels[i + k] = v.min(255) as u8;
+    }
+}
+
+fn add_pixel_line(frame: &mut Frame, x0: f32, y0: f32, x1: f32, y1: f32, c: Rgba) {
+    let dx = x1 - x0;
+    let dy = y1 - y0;
+    let steps = dx.abs().max(dy.abs()).max(1.0) as u32;
+    for s in 0..=steps {
+        let t = s as f32 / steps as f32;
+        let px = x0 + dx * t;
+        let py = y0 + dy * t;
+        if px < 0.0 || py < 0.0 || px >= frame.width as f32 || py >= frame.height as f32 {
+            continue;
+        }
+        frame.add_pixel(px as u32, py as u32, c);
+    }
+}
+
+fn stamp_disc(frame: &mut Frame, cx: f32, cy: f32, radius: f32, c: Rgba, additive: bool) {
+    let x0 = (cx - radius).max(0.0) as u32;
+    let y0 = (cy - radius).max(0.0) as u32;
+    let x1 = (cx + radius).min(frame.width as f32 - 1.0) as u32;
+    let y1 = (cy + radius).min(frame.height as f32 - 1.0) as u32;
+    for py in y0..=y1 {
+        for px in x0..=x1 {
+            let dx = px as f32 - cx;
+            let dy = py as f32 - cy;
+            if dx * dx + dy * dy <= radius * radius {
+                if additive {
+                    frame.add_pixel(px, py, c);
+                } else {
+                    frame.blend(px, py, c);
                 }
-                let d = dst + x * 4;
-                rgba[d] = bgra[s + 2];
-                rgba[d + 1] = bgra[s + 1];
-                rgba[d + 2] = bgra[s];
-                rgba[d + 3] = 255;
             }
         }
-        Self { width, height, rgba }
-    }
-
-    /// Bilinear sample at normalized-free pixel coordinates.
-    #[inline]
-    fn sample(&self, sx: f32, sy: f32) -> [f32; 4] {
-        let x = sx.clamp(0.0, self.width.saturating_sub(1) as f32);
-        let y = sy.clamp(0.0, self.height.saturating_sub(1) as f32);
-        let x0 = x.floor() as usize;
-        let y0 = y.floor() as usize;
-        let x1 = (x0 + 1).min(self.width.saturating_sub(1) as usize);
-        let y1 = (y0 + 1).min(self.height.saturating_sub(1) as usize);
-        let fx = x - x0 as f32;
-        let fy = y - y0 as f32;
-        let at = |px: usize, py: usize| -> [f32; 4] {
-            let i = (py * self.width as usize + px) * 4;
-            [self.rgba[i] as f32, self.rgba[i + 1] as f32, self.rgba[i + 2] as f32, self.rgba[i + 3] as f32]
-        };
-        let p00 = at(x0, y0);
-        let p10 = at(x1, y0);
-        let p01 = at(x0, y1);
-        let p11 = at(x1, y1);
-        let mut out = [0.0f32; 4];
-        for k in 0..4 {
-            let top = p00[k] + (p10[k] - p00[k]) * fx;
-            let bottom = p01[k] + (p11[k] - p01[k]) * fx;
-            out[k] = top + (bottom - top) * fy;
-        }
-        out
     }
 }
 
-/// An RGBA8 framebuffer owned by the renderer.
-pub struct Frame {
-    pub width: u32,
-    pub height: u32,
-    pub pixels: Vec<u8>,
-    clip: Option<[u32; 4]>,
-}
-
-impl Frame {
-    #[must_use]
-    pub fn new(width: u32, height: u32) -> Self {
-        Self { width, height, pixels: vec![0; (width as usize) * (height as usize) * 4], clip: None }
-    }
-
-    /// Restricts every subsequent paint to `rect` (x0, y0, x1, y1).
-    pub fn set_clip(&mut self, rect: [f32; 4]) {
-        let x0 = rect[0].max(0.0) as u32;
-        let y0 = rect[1].max(0.0) as u32;
-        let x1 = rect[2].min(self.width as f32) as u32;
-        let y1 = rect[3].min(self.height as f32) as u32;
-        self.clip = if x1 > x0 && y1 > y0 { Some([x0, y0, x1, y1]) } else { Some([0, 0, 0, 0]) };
-    }
-
-    pub fn clear_clip(&mut self) {
-        self.clip = None;
-    }
-
+impl Paint for Frame {
     #[inline]
-    fn inside_clip(&self, x: u32, y: u32) -> bool {
-        match self.clip {
-            None => true,
-            Some([x0, y0, x1, y1]) => x >= x0 && x < x1 && y >= y0 && y < y1,
-        }
-    }
-
-    #[inline]
-    fn set(&mut self, x: u32, y: u32, c: Rgba) {
-        let i = ((y * self.width + x) as usize) * 4;
-        self.pixels[i] = c.0[0];
-        self.pixels[i + 1] = c.0[1];
-        self.pixels[i + 2] = c.0[2];
-        self.pixels[i + 3] = c.0[3];
-    }
-
-    #[inline]
-    pub fn blend(&mut self, x: u32, y: u32, c: Rgba) {
-        if !self.inside_clip(x, y) {
+    fn blend(&mut self, x: u32, y: u32, c: Rgba) {
+        if !inside_clip(self, x, y) {
             return;
         }
         let i = ((y * self.width + x) as usize) * 4;
         let a = c.0[3] as u32;
         if a >= 255 {
-            self.set(x, y, c);
+            set_pixel(self, x, y, c);
             return;
         }
         if a == 0 {
@@ -139,23 +159,20 @@ impl Frame {
     }
 
     #[inline]
-    fn add(&mut self, x: u32, y: u32, c: Rgba) {
-        let i = ((y * self.width + x) as usize) * 4;
-        for k in 0..3 {
-            let v = self.pixels[i + k] as u32 + (c.0[k] as u32 * c.0[3] as u32 / 255);
-            self.pixels[i + k] = v.min(255) as u8;
+    fn add_pixel(&mut self, x: u32, y: u32, c: Rgba) {
+        if !inside_clip(self, x, y) {
+            return;
         }
+        add(self, x, y, c);
     }
 
-    /// Paints a solid color everywhere.
-    pub fn fill(&mut self, c: Rgba) {
+    fn fill(&mut self, c: Rgba) {
         for chunk in self.pixels.chunks_mut(4) {
             chunk.copy_from_slice(&c.0);
         }
     }
 
-    /// Paints a vertical gradient through the given color stops (evenly spaced).
-    pub fn v_gradient(&mut self, stops: &[Rgba]) {
+    fn v_gradient(&mut self, stops: &[Rgba]) {
         if stops.is_empty() {
             return;
         }
@@ -178,8 +195,7 @@ impl Frame {
         }
     }
 
-    /// Paints a radial gradient from `center` color to `edge` color.
-    pub fn radial(&mut self, center: Rgba, edge: Rgba) {
+    fn radial(&mut self, center: Rgba, edge: Rgba) {
         let cx = self.width as f32 / 2.0;
         let cy = self.height as f32 / 2.0;
         let max_r = (cx * cx + cy * cy).sqrt();
@@ -189,13 +205,12 @@ impl Frame {
                 let dy = y as f32 - cy;
                 let t = (dx * dx + dy * dy).sqrt() / max_r;
                 let c = center.lerp(edge, t);
-                self.set(x, y, c);
+                set_pixel(self, x, y, c);
             }
         }
     }
 
-    /// Source-over rectangle. Coordinates are clamped to the frame.
-    pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Rgba) {
+    fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, c: Rgba) {
         let x0 = x.max(0.0) as u32;
         let y0 = y.max(0.0) as u32;
         let x1 = (x + w).min(self.width as f32) as u32;
@@ -210,8 +225,7 @@ impl Frame {
         }
     }
 
-    /// Rounded rectangle with a corner radius in pixels.
-    pub fn round_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, c: Rgba) {
+    fn round_rect(&mut self, x: f32, y: f32, w: f32, h: f32, radius: f32, c: Rgba) {
         if radius <= 0.01 {
             self.rect(x, y, w, h, c);
             return;
@@ -248,38 +262,7 @@ impl Frame {
         }
     }
 
-    /// Samples `src` with bilinear filtering at fractional coordinates.
-    #[must_use]
-    pub fn sample(&self, sx: f32, sy: f32) -> [f32; 4] {
-        let w = self.width.saturating_sub(1) as f32;
-        let h = self.height.saturating_sub(1) as f32;
-        let x = sx.clamp(0.0, w);
-        let y = sy.clamp(0.0, h);
-        let x0 = x.floor();
-        let y0 = y.floor();
-        let fx = x - x0;
-        let fy = y - y0;
-        let (x0, y0) = (x0 as u32, y0 as u32);
-        let x1 = (x0 + 1).min(self.width.saturating_sub(1));
-        let y1 = (y0 + 1).min(self.height.saturating_sub(1));
-        let at = |px: u32, py: u32| -> [f32; 4] {
-            let i = ((py * self.width + px) as usize) * 4;
-            [self.pixels[i] as f32, self.pixels[i + 1] as f32, self.pixels[i + 2] as f32, self.pixels[i + 3] as f32]
-        };
-        let (p00, p10, p01, p11) = (at(x0, y0), at(x1, y0), at(x0, y1), at(x1, y1));
-        let mut out = [0.0f32; 4];
-        for k in 0..4 {
-            let top = p00[k] + (p10[k] - p00[k]) * fx;
-            let bottom = p01[k] + (p11[k] - p01[k]) * fx;
-            out[k] = top + (bottom - top) * fy;
-        }
-        out
-    }
-
-    /// Camera transform: samples `src` around `focus` at `zoom` and optional
-    /// rotation, then writes the result into this frame. Used to push, pull and
-    /// pan a whole scene like a real lens.
-    pub fn resample_from(&mut self, src: &Frame, zoom: f32, focus: [f32; 2], rotate_deg: f32) {
+    fn resample_from(&mut self, src: &Frame, zoom: f32, focus: [f32; 2], rotate_deg: f32) {
         let zoom = zoom.max(0.05);
         let angle = rotate_deg.to_radians();
         let (sin, cos) = angle.sin_cos();
@@ -327,20 +310,7 @@ impl Frame {
         }
     }
 
-    /// Additive blend of one pixel (light, glow, overlays).
-    #[inline]
-    pub fn add_pixel(&mut self, x: u32, y: u32, c: Rgba) {
-        if !self.inside_clip(x, y) {
-            return;
-        }
-        self.add(x, y, c);
-    }
-
-    /// Paints a soft-edged band across the frame at `angle` degrees.
-    ///
-    /// Falloff is gaussian so the band reads as light in the air rather than as
-    /// a painted stripe.
-    pub fn band(&mut self, center_y: f32, angle_deg: f32, thickness: f32, c: Rgba) {
+    fn band(&mut self, center_y: f32, angle_deg: f32, thickness: f32, c: Rgba) {
         let angle = angle_deg.to_radians();
         let (sin, cos) = angle.sin_cos();
         let half = thickness / 2.0;
@@ -361,27 +331,11 @@ impl Frame {
             let cy = center_y + offset * cos;
             let dx = cos * self.width as f32;
             let dy = sin * self.width as f32;
-            self.add_pixel_line(cx - dx, cy - dy, cx + dx, cy + dy, color);
+            add_pixel_line(self, cx - dx, cy - dy, cx + dx, cy + dy, color);
         }
     }
 
-    fn add_pixel_line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, c: Rgba) {
-        let dx = x1 - x0;
-        let dy = y1 - y0;
-        let steps = dx.abs().max(dy.abs()).max(1.0) as u32;
-        for s in 0..=steps {
-            let t = s as f32 / steps as f32;
-            let px = x0 + dx * t;
-            let py = y0 + dy * t;
-            if px < 0.0 || py < 0.0 || px >= self.width as f32 || py >= self.height as f32 {
-                continue;
-            }
-            self.add_pixel(px as u32, py as u32, c);
-        }
-    }
-
-    /// Sprinkles deterministic grain; `seed` changes per frame.
-    pub fn grain(&mut self, density: u32, strength: f32, seed: u32) {
+    fn grain(&mut self, density: u32, strength: f32, seed: u32) {
         let amount = ((strength.clamp(0.0, 1.0)) * 255.0) as u8;
         for i in 0..density {
             let h = hash(seed.wrapping_mul(2_654_435_761).wrapping_add(i));
@@ -394,11 +348,7 @@ impl Frame {
         }
     }
 
-    /// Fills a closed polygon with 4x vertical supersampling for soft edges.
-    ///
-    /// Coverage is accumulated per pixel and composited once, so a solid fill
-    /// stays solid instead of stacking four translucent passes.
-    pub fn fill_polygon(&mut self, points: &[[f32; 2]], c: Rgba, additive: bool) {
+    fn fill_polygon(&mut self, points: &[[f32; 2]], c: Rgba, additive: bool) {
         if points.len() < 3 || c.0[3] == 0 {
             return;
         }
@@ -463,8 +413,7 @@ impl Frame {
         }
     }
 
-    /// Strokes a polyline, optionally only the first `progress` of its length.
-    pub fn stroke_polyline(&mut self, points: &[[f32; 2]], width: f32, c: Rgba, progress: f32, additive: bool) {
+    fn stroke_polyline(&mut self, points: &[[f32; 2]], width: f32, c: Rgba, progress: f32, additive: bool) {
         if points.len() < 2 {
             return;
         }
@@ -496,7 +445,7 @@ impl Frame {
                 let f = s as f32 / steps as f32;
                 let px = a[0] + (end[0] - a[0]) * f;
                 let py = a[1] + (end[1] - a[1]) * f;
-                self.stamp_disc(px, py, half, c, additive);
+                stamp_disc(self, px, py, half, c, additive);
             }
             walked += usable;
             if walked >= limit {
@@ -505,28 +454,7 @@ impl Frame {
         }
     }
 
-    fn stamp_disc(&mut self, cx: f32, cy: f32, radius: f32, c: Rgba, additive: bool) {
-        let x0 = (cx - radius).max(0.0) as u32;
-        let y0 = (cy - radius).max(0.0) as u32;
-        let x1 = (cx + radius).min(self.width as f32 - 1.0) as u32;
-        let y1 = (cy + radius).min(self.height as f32 - 1.0) as u32;
-        for py in y0..=y1 {
-            for px in x0..=x1 {
-                let dx = px as f32 - cx;
-                let dy = py as f32 - cy;
-                if dx * dx + dy * dy <= radius * radius {
-                    if additive {
-                        self.add_pixel(px, py, c);
-                    } else {
-                        self.blend(px, py, c);
-                    }
-                }
-            }
-        }
-    }
-
-    /// Ring or disc.
-    pub fn circle(&mut self, cx: f32, cy: f32, radius: f32, c: Rgba, stroke: Option<f32>) {
+    fn circle(&mut self, cx: f32, cy: f32, radius: f32, c: Rgba, stroke: Option<f32>) {
         let r = radius;
         let x0 = (cx - r).max(0.0) as u32;
         let y0 = (cy - r).max(0.0) as u32;
@@ -545,8 +473,7 @@ impl Frame {
         }
     }
 
-    /// Straight line with thickness.
-    pub fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32, c: Rgba) {
+    fn line(&mut self, x0: f32, y0: f32, x1: f32, y1: f32, thickness: f32, c: Rgba) {
         let dx = x1 - x0;
         let dy = y1 - y0;
         let len = (dx * dx + dy * dy).max(0.001);
@@ -560,8 +487,7 @@ impl Frame {
         }
     }
 
-    /// Additive soft glow dot for star fields and highlights.
-    pub fn glow(&mut self, cx: f32, cy: f32, radius: f32, c: Rgba) {
+    fn glow(&mut self, cx: f32, cy: f32, radius: f32, c: Rgba) {
         let x0 = (cx - radius).max(0.0) as u32;
         let y0 = (cy - radius).max(0.0) as u32;
         let x1 = (cx + radius).min(self.width as f32 - 1.0) as u32;
@@ -576,16 +502,12 @@ impl Frame {
                 }
                 let falloff = (1.0 - d) * (1.0 - d);
                 let a = c.0[3] as f32 * falloff / 255.0;
-                self.add(px, py, Rgba([c.0[0], c.0[1], c.0[2], (a * 255.0) as u8]));
+                add(self, px, py, Rgba([c.0[0], c.0[1], c.0[2], (a * 255.0) as u8]));
             }
         }
     }
 
-    /// Draws `bitmap` into the box `(x, y, w, h)` honoring `fit`.
-    ///
-    /// `alpha` scales the source alpha; `radius` clips the result to rounded
-    /// corners (0 draws a plain rectangle).
-    pub fn draw_bitmap(&mut self, bitmap: &Bitmap, x: f32, y: f32, w: f32, h: f32, fit: Fit, alpha: f32, radius: f32) {
+    fn draw_bitmap(&mut self, bitmap: &Bitmap, x: f32, y: f32, w: f32, h: f32, fit: Fit, alpha: f32, radius: f32) {
         if w <= 0.0 || h <= 0.0 || bitmap.width == 0 || bitmap.height == 0 {
             return;
         }
@@ -639,8 +561,7 @@ impl Frame {
         }
     }
 
-    /// Deterministic star field: hash-based positions, sine twinkle, slow drift.
-    pub fn starfield(&mut self, count: u32, tint: Rgba, drift_px_per_sec: f32, twinkle: f32, seconds: f32) {
+    fn starfield(&mut self, count: u32, tint: Rgba, drift_px_per_sec: f32, twinkle: f32, seconds: f32) {
         for i in 0..count {
             let h = hash(i);
             let base_x = (h & 0xffff) as f32 / 65535.0;
@@ -659,8 +580,7 @@ impl Frame {
         }
     }
 
-    /// Darkens the frame edges; `vignette` holds one alpha byte per pixel.
-    pub fn apply_vignette(&mut self, factor: &[u8]) {
+    fn apply_vignette(&mut self, factor: &[u8]) {
         let mut i = 0;
         for y in 0..self.height {
             for x in 0..self.width {
@@ -675,50 +595,6 @@ impl Frame {
                 i += 1;
             }
         }
-    }
-
-    /// Converts RGBA8 to NV12 (BT.601, full-range) for the encoder.
-    #[must_use]
-    pub fn to_nv12(&self) -> Vec<u8> {
-        let w = self.width as usize;
-        let h = self.height as usize;
-        let mut out = vec![0u8; w * h + w * h / 2];
-        let mut di = 0;
-        for y in 0..h {
-            let row = y * w * 4;
-            for x in 0..w {
-                let p = row + x * 4;
-                let r = self.pixels[p] as f32 / 255.0;
-                let g = self.pixels[p + 1] as f32 / 255.0;
-                let b = self.pixels[p + 2] as f32 / 255.0;
-                let yy = 0.299 * r + 0.587 * g + 0.114 * b;
-                out[di] = (yy * 255.0).round().clamp(0.0, 255.0) as u8;
-                di += 1;
-            }
-        }
-        let mut uv = w * h;
-        for by in (0..h).step_by(2) {
-            for bx in (0..w).step_by(2) {
-                let mut acc_u = 0.0f32;
-                let mut acc_v = 0.0f32;
-                let mut n = 0.0f32;
-                for dy in 0..2 {
-                    for dx in 0..2 {
-                        let p = (by + dy) * w * 4 + (bx + dx) * 4;
-                        let r = self.pixels[p] as f32 / 255.0;
-                        let g = self.pixels[p + 1] as f32 / 255.0;
-                        let b = self.pixels[p + 2] as f32 / 255.0;
-                        acc_u += -0.168736 * r - 0.331264 * g + 0.5 * b;
-                        acc_v += 0.5 * r - 0.418688 * g - 0.081312 * b;
-                        n += 1.0;
-                    }
-                }
-                out[uv] = ((acc_u / n) * 255.0 + 128.0).round().clamp(0.0, 255.0) as u8;
-                out[uv + 1] = ((acc_v / n) * 255.0 + 128.0).round().clamp(0.0, 255.0) as u8;
-                uv += 2;
-            }
-        }
-        out
     }
 }
 

@@ -11,3 +11,4 @@ publish.workspace = true
 [dependencies]
 geometry-types = { workspace = true }
 hardware-program = { workspace = true }
+media-image = { workspace = true }

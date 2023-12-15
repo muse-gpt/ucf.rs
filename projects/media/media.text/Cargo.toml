@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 fontdue = { workspace = true }
 geometry = { workspace = true }
+media-image = { workspace = true }
 media-raster = { workspace = true }
 media-scene = { workspace = true }
 media-types = { workspace = true }

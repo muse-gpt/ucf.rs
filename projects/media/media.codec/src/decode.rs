@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use media_raster::Bitmap;
+use media_image::Bitmap;
 use media_types::Error;
 
 /// Per-render cache of imported media.
@@ -101,7 +101,7 @@ mod win {
     use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx};
     use windows::core::PCWSTR;
 
-    use media_raster::Bitmap;
+    use media_image::Bitmap;
     use media_types::Error;
     use media_types::SAMPLE_RATE;
 

@@ -1,12 +1,13 @@
 //! Media facade.
 //!
-//! Re-exports only: the scene IR, raster, text, codec, audio, post and render
-//! crates stay independently usable, and downstream products depend on this
-//! facade.
+//! Re-exports only: the image storage, scene IR, raster, text, codec, audio,
+//! post and render crates stay independently usable, and downstream products
+//! depend on this facade.
 
 pub use media_audio as audio;
 pub use media_canvas as canvas;
 pub use media_codec as codec;
+pub use media_image as image;
 pub use media_post as post;
 pub use media_raster as raster;
 pub use media_render as render;

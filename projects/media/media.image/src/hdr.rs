@@ -1,8 +1,9 @@
 // 源自 TON blackhole 渲染器（MIT, © TON Team），按 MPL-2.0 分发。
 
-use geometry_types::LinearRgb;
+//! 线性 HDR 帧缓冲存储：像素容器与原始 clamp 转换。
+//! 色调映射与泛光等处理语义归 `media.post`。
 
-use crate::post::tone_map_rgb;
+use geometry_types::LinearRgb;
 
 /// 帧缓冲颜色空间：Beauty 输出为线性 HDR，色调映射后标记为显示空间。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -39,21 +40,8 @@ impl Framebuffer {
         }
     }
 
-    /// 编码为 RGBA8：线性 HDR 帧会先执行一次色调映射。
-    pub fn to_rgba8(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.pixels.len() * 4);
-        for px in &self.pixels {
-            let display = match self.encoding {
-                FramebufferEncoding::LinearHdr => tone_map_rgb(*px),
-                FramebufferEncoding::Display => *px,
-            };
-            let [r, g, b] = display.to_u8();
-            out.extend_from_slice(&[r, g, b, 255]);
-        }
-        out
-    }
-
     /// 线性 HDR 原始值（不色调映射），用于 HDR 诊断输出。
+    #[must_use]
     pub fn to_rgba8_linear(&self) -> Vec<u8> {
         let mut out = Vec::with_capacity(self.pixels.len() * 4);
         for px in &self.pixels {

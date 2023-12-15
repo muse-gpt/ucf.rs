@@ -11,4 +11,4 @@ publish.workspace = true
 [dependencies]
 geometry = { workspace = true }
 media-types = { workspace = true }
-media-scene = { workspace = true }
+media-image = { workspace = true }

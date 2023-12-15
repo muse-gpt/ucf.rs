@@ -9,6 +9,7 @@ use media::{render_project, scene::Project};
 | 子库 | 职责 |
 |------|------|
 | `media.types` | 错误、确定性 hash、采样率 |
+| `media.image` | 像素/浮点图像存储与格式转换 |
 | `media.scene` | 场景 IR |
 | `media.raster` | 软件光栅与 PNG |
 | `media.text` | 文字排版与字形 |

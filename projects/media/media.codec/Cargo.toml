@@ -10,7 +10,7 @@ publish.workspace = true
 
 [dependencies]
 media-types = { workspace = true }
-media-raster = { workspace = true }
+media-image = { workspace = true }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true }

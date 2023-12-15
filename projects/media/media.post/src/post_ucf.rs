@@ -4,10 +4,10 @@
 
 use geometry_types::LinearRgb;
 use hardware_program::{CpuInterpreter, Program, Value};
+use media_image::{Framebuffer, FramebufferEncoding};
 
 use crate::bloom_scale::{UcfDownsample2xRgbBuilder, UcfUpsampleRgbBuilder};
 use crate::box_blur::UcfBoxBlur3x3Builder;
-use crate::framebuffer::{Framebuffer, FramebufferEncoding};
 use crate::post_bloom_extract;
 use crate::tone_map_aces;
 

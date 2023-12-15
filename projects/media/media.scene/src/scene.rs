@@ -4,6 +4,7 @@
 //! consumes nothing else. Frame counts are the unit of time inside the IR;
 //! seconds belong to the authoring layer.
 
+use media_image::Fit;
 use serde::{Deserialize, Serialize};
 
 // Camera keyframes, easing and sampling live in the geometry library: a camera
@@ -181,19 +182,6 @@ pub enum ShapeKind {
     Circle,
     Ring,
     Line,
-}
-
-/// How a decoded frame is mapped into its layout box.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[serde(rename_all = "kebab-case")]
-pub enum Fit {
-    /// Scale to fit inside the box, preserving aspect ratio (letterbox).
-    #[default]
-    Contain,
-    /// Fill the box, preserving aspect ratio, cropping the overflow.
-    Cover,
-    /// Fill the box exactly, ignoring aspect ratio.
-    Stretch,
 }
 
 /// Syntax tone of a code line fragment.

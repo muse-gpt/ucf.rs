@@ -10,4 +10,5 @@ publish.workspace = true
 
 [dependencies]
 geometry = { workspace = true }
+media-image = { workspace = true }
 media-raster = { workspace = true }

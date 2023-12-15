@@ -10,6 +10,7 @@ publish.workspace = true
 
 [dependencies]
 media-types = { workspace = true }
+media-image = { workspace = true }
 media-scene = { workspace = true }
 media-raster = { workspace = true }
 media-canvas = { workspace = true }

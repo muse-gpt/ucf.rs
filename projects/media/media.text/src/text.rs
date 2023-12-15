@@ -7,7 +7,8 @@ use std::collections::HashMap;
 use fontdue::{Font, FontSettings};
 
 use geometry::Rgba;
-use media_raster::Frame;
+use media_image::Frame;
+use media_raster::Paint;
 use media_scene::{Align, Tone};
 
 const REGULAR: &[&str] = &["C:\\Windows\\Fonts\\msyh.ttc", "C:\\Windows\\Fonts\\NotoSansCJK-Regular.ttc"];

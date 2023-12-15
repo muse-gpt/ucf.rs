@@ -1,7 +1,7 @@
 //! Round brushes and stroke stamping.
 
 use geometry::Rgba;
-use media_raster::Frame;
+use media_image::Frame;
 
 /// Whether a stamp adds light or replaces paint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -134,6 +134,7 @@ impl Brush {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use media_raster::Paint;
 
     #[test]
     fn a_stamp_paints_the_center() {

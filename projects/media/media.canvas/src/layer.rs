@@ -1,7 +1,8 @@
 //! Layer stacks and blend modes.
 
 use geometry::Rgba;
-use media_raster::Frame;
+use media_image::Frame;
+use media_raster::Paint;
 
 /// How a layer combines with what is already there.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
