@@ -6,6 +6,7 @@ pub mod hash;
 pub use error::Error;
 pub use hash::hash;
 
-/// Sample rate of the audio bed. Codecs resample imports into this rate so the
-/// mixer never has to care where a clip came from.
+/// Project default audio sample rate. Track plans and codec calls carry the
+/// rate explicitly; this constant is only the value the render layer picks
+/// when a project does not choose one.
 pub const SAMPLE_RATE: u32 = 44_100;

@@ -18,6 +18,12 @@ impl Error {
         Self { code: "invalid_scene", message: message.into() }
     }
 
+    /// An input contract (sample rate, channels, dimensions) was violated.
+    #[must_use]
+    pub fn invalid_input(message: impl Into<String>) -> Self {
+        Self { code: "invalid_input", message: message.into() }
+    }
+
     /// An I/O step (fonts, output file) failed.
     #[must_use]
     pub fn io(message: impl Into<String>) -> Self {

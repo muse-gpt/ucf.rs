@@ -13,25 +13,28 @@ pub struct Encoder {
 }
 
 impl Encoder {
-    /// Opens `out` for H.264 video at `fps` and optional audio.
+    /// Opens `out` for H.264 video at `fps` and optional audio at `sample_rate`.
     ///
-    /// The audio codec is negotiated: AAC is preferred, and machines without
-    /// the AAC encoder MFT registered fall back to FLAC.
+    /// The sample rate is an input contract: the container declares exactly
+    /// the rate of the PCM the caller will feed in. The audio codec is
+    /// negotiated: AAC is preferred, and machines without the AAC encoder MFT
+    /// registered fall back to FLAC.
     pub fn open(
         out: &std::path::Path,
         width: u32,
         height: u32,
         fps: u32,
         bitrate: u32,
+        sample_rate: u32,
         with_audio: bool,
     ) -> Result<Self, Error> {
         #[cfg(windows)]
         {
-            Ok(Self { inner: WindowsEncoder::open(out, width, height, fps, bitrate, with_audio)? })
+            Ok(Self { inner: WindowsEncoder::open(out, width, height, fps, bitrate, sample_rate, with_audio)? })
         }
         #[cfg(not(windows))]
         {
-            let _ = (out, width, height, fps, bitrate, with_audio);
+            let _ = (out, width, height, fps, bitrate, sample_rate, with_audio);
             Err(Error::unsupported("OpenCut encoding currently requires Windows Media Foundation"))
         }
     }
@@ -134,12 +137,21 @@ mod windows_encoder {
         audio_index: Option<u32>,
         width: u32,
         height: u32,
+        sample_rate: u32,
         started: bool,
         audio_codec: String,
     }
 
     impl WindowsEncoder {
-        pub fn open(out: &Path, width: u32, height: u32, fps: u32, bitrate: u32, with_audio: bool) -> Result<Self, Error> {
+        pub fn open(
+            out: &Path,
+            width: u32,
+            height: u32,
+            fps: u32,
+            bitrate: u32,
+            sample_rate: u32,
+            with_audio: bool,
+        ) -> Result<Self, Error> {
             unsafe {
                 let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
                 mf::MFStartup(mf::MF_VERSION, mf::MFSTARTUP_FULL).map_err(|e| encode_error("MFStartup", e))?;
@@ -151,7 +163,7 @@ mod windows_encoder {
             };
             let mut last_error = None;
             for (subtype, name) in candidates {
-                match Self::try_open(out, width, height, fps, bitrate, with_audio, subtype, name) {
+                match Self::try_open(out, width, height, fps, bitrate, sample_rate, with_audio, subtype, name) {
                     Ok(encoder) => return Ok(encoder),
                     Err(error) => last_error = Some(error),
                 }
@@ -165,6 +177,7 @@ mod windows_encoder {
             height: u32,
             fps: u32,
             bitrate: u32,
+            sample_rate: u32,
             with_audio: bool,
             audio_subtype: &windows::core::GUID,
             codec_name: &str,
@@ -229,7 +242,7 @@ mod windows_encoder {
                     set_guid(&audio_out, &mf::MF_MT_SUBTYPE, audio_subtype).map_err(|e| encode_error("audio subtype", e))?;
                     set_u32(&audio_out, &mf::MF_MT_AUDIO_BITS_PER_SAMPLE, 16).map_err(|e| encode_error("audio bits", e))?;
                     set_u32(&audio_out, &mf::MF_MT_AUDIO_NUM_CHANNELS, 2).map_err(|e| encode_error("audio channels", e))?;
-                    set_u32(&audio_out, &mf::MF_MT_AUDIO_SAMPLES_PER_SECOND, media_types::SAMPLE_RATE)
+                    set_u32(&audio_out, &mf::MF_MT_AUDIO_SAMPLES_PER_SECOND, sample_rate)
                         .map_err(|e| encode_error("audio rate", e))?;
                     if *audio_subtype == mf::MFAudioFormat_AAC {
                         set_u32(&audio_out, &mf::MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 25_600)
@@ -243,12 +256,12 @@ mod windows_encoder {
                     set_guid(&audio_in, &mf::MF_MT_SUBTYPE, &mf::MFAudioFormat_Float)
                         .map_err(|e| encode_error("audio in subtype", e))?;
                     set_u32(&audio_in, &mf::MF_MT_AUDIO_NUM_CHANNELS, 2).map_err(|e| encode_error("audio in channels", e))?;
-                    set_u32(&audio_in, &mf::MF_MT_AUDIO_SAMPLES_PER_SECOND, media_types::SAMPLE_RATE)
+                    set_u32(&audio_in, &mf::MF_MT_AUDIO_SAMPLES_PER_SECOND, sample_rate)
                         .map_err(|e| encode_error("audio in rate", e))?;
                     set_u32(&audio_in, &mf::MF_MT_AUDIO_BITS_PER_SAMPLE, 32).map_err(|e| encode_error("audio in bits", e))?;
                     set_u32(&audio_in, &mf::MF_MT_AUDIO_BLOCK_ALIGNMENT, 8)
                         .map_err(|e| encode_error("audio block align", e))?;
-                    set_u32(&audio_in, &mf::MF_MT_AUDIO_AVG_BYTES_PER_SECOND, media_types::SAMPLE_RATE * 8)
+                    set_u32(&audio_in, &mf::MF_MT_AUDIO_AVG_BYTES_PER_SECOND, sample_rate * 8)
                         .map_err(|e| encode_error("audio in avg bytes", e))?;
                 }
                 audio_index = Some(unsafe { writer.AddStream(&audio_out).map_err(|e| encode_error("AddStream(audio)", e))? });
@@ -259,7 +272,16 @@ mod windows_encoder {
                 }
             }
 
-            Ok(Self { writer, video_index, audio_index, width, height, started: false, audio_codec: codec_name.to_string() })
+            Ok(Self {
+                writer,
+                video_index,
+                audio_index,
+                width,
+                height,
+                sample_rate,
+                started: false,
+                audio_codec: codec_name.to_string(),
+            })
         }
 
         pub fn write_video(&mut self, nv12: &[u8], frame: u32, fps: u32) -> Result<(), Error> {
@@ -309,7 +331,7 @@ mod windows_encoder {
                 buffer.Unlock().map_err(|e| encode_error("Unlock(audio)", e))?;
                 buffer.SetCurrentLength(payload as u32).map_err(|e| encode_error("SetCurrentLength(audio)", e))?;
                 sample.AddBuffer(&buffer).map_err(|e| encode_error("AddBuffer(audio)", e))?;
-                let rate = media_types::SAMPLE_RATE as i64;
+                let rate = self.sample_rate as i64;
                 sample
                     .SetSampleTime(start_sample as i64 * 10_000_000 / rate)
                     .map_err(|e| encode_error("SetSampleTime(audio)", e))?;

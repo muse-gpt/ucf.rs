@@ -1,6 +1,6 @@
 [package]
 name = "media-audio"
-description = "Audio bed synthesis and mixing: music pad, sound effects and imported clips"
+description = "Audio track planning and mixing: neutral track plans, music pad, sound effects and imported clips"
 readme = "readme.md"
 version.workspace = true
 edition.workspace = true
@@ -11,4 +11,3 @@ publish.workspace = true
 [dependencies]
 media-types = { workspace = true }
 media-codec = { workspace = true }
-media-scene = { workspace = true }

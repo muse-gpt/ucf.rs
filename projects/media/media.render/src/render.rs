@@ -7,7 +7,7 @@ use geometry::camera_at;
 use geometry::smooth_polyline;
 use geometry::{Rgba, parse, parse_or};
 use geometry::{apply, fade};
-use media_audio::build_audio;
+use media_audio::{AudioPlan, BgmPlan, ClipPlacement, NarrationPlacement, SfxPlacement, build_audio};
 use media_codec::Encoder;
 use media_codec::MediaLibrary;
 use media_image::Frame;
@@ -42,9 +42,10 @@ pub fn render_project(json: &str, out: &Path, progress: &mut dyn FnMut(u32, u32)
     let vignette = build_vignette(w, h, 0.55);
     let seconds = project.duration_frames as f64 / fps as f64;
     let has_audio = project.audio.is_some();
-    let audio = build_audio(project.audio.as_ref(), seconds, fps, &mut media);
+    let plan = lower_audio(&project);
+    let audio = build_audio(&plan, &mut media)?;
     let bitrate = (w * h * fps / 2).clamp(2_000_000, 20_000_000);
-    let mut encoder = Encoder::open(out, w, h, fps, bitrate, has_audio)?;
+    let mut encoder = Encoder::open(out, w, h, fps, bitrate, plan.sample_rate, has_audio)?;
     let audio_codec = encoder.audio_codec().to_string();
 
     let mut frame = Frame::new(w, h);
@@ -53,7 +54,7 @@ pub fn render_project(json: &str, out: &Path, progress: &mut dyn FnMut(u32, u32)
     let ss = supersample(&project);
     let mut scratch = Frame::new((w as f32 * ss).round() as u32, (h as f32 * ss).round() as u32);
     let total = project.duration_frames;
-    let rate = media_types::SAMPLE_RATE as usize;
+    let rate = plan.sample_rate as usize;
     let mut written_samples = 0usize;
     for f in 0..total {
         paint_frame(&project, &mut fonts, &mut media, &vignette, &mut scratch, f, &mut frame);
@@ -83,6 +84,45 @@ pub fn render_project(json: &str, out: &Path, progress: &mut dyn FnMut(u32, u32)
         backend: if has_audio { format!("media-foundation+h264+{audio_codec}") } else { "media-foundation+h264".to_string() },
         audio: has_audio,
     })
+}
+
+/// Lowers the scene's `AudioSpec` into the mixer's neutral track plan.
+///
+/// The plan carries the project default sample rate; `media.audio` never sees
+/// the scene IR, so the audio crate stays free of scene semantics.
+fn lower_audio(project: &Project) -> AudioPlan {
+    let spec = project.audio.as_ref();
+    AudioPlan {
+        sample_rate: media_types::SAMPLE_RATE,
+        channels: 2,
+        fps: project.fps,
+        duration_frames: project.duration_frames,
+        bgm: spec
+            .and_then(|a| a.bgm.as_ref())
+            .map(|b| BgmPlan { volume: b.volume, mood: b.mood.clone() }),
+        narration: spec
+            .and_then(|a| a.narration.as_ref())
+            .map(|n| NarrationPlacement { wav: n.wav.clone(), delay_frames: n.delay_frames, volume: n.volume }),
+        sfx: spec
+            .map(|a| {
+                a.sfx.iter().map(|s| SfxPlacement { kind: s.kind.clone(), at_frames: s.at, volume: s.volume }).collect()
+            })
+            .unwrap_or_default(),
+        clips: spec
+            .map(|a| {
+                a.clips
+                    .iter()
+                    .map(|c| ClipPlacement {
+                        src: c.src.clone(),
+                        at_frames: c.at,
+                        duration_frames: c.dur,
+                        offset_frames: c.offset_frames,
+                        volume: c.volume,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
 }
 
 /// Largest zoom the film asks for, clamped to a sane raster budget. The world
@@ -839,7 +879,7 @@ mod tests {
                 pixels.extend_from_slice(&[(x * 4) as u8, (y * 5) as u8, 0x40, 0xFF]);
             }
         }
-        media_raster::write_png(&path, width, height, &pixels).expect("write png");
+        media_codec::write_png(&path, width, height, &pixels).expect("write png");
 
         let mut media = media_codec::MediaLibrary::new();
         let bitmap = media.image(path.to_str().unwrap()).expect("decode png");
@@ -884,7 +924,7 @@ mod tests {
             samples.push(value);
             samples.push(value);
         }
-        media_audio::write_wav(wav.to_str().unwrap(), &samples).expect("wav");
+        media_codec::write_wav(wav.to_str().unwrap(), &samples, media_types::SAMPLE_RATE).expect("wav");
 
         // 3. Import both in a film.
         let film = serde_json::json!({

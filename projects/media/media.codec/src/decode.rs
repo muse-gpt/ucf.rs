@@ -17,7 +17,7 @@ use media_types::Error;
 #[derive(Default)]
 pub struct MediaLibrary {
     images: HashMap<String, Rc<Bitmap>>,
-    audio: HashMap<String, Rc<Vec<[f32; 2]>>>,
+    audio: HashMap<(String, u32), Rc<Vec<[f32; 2]>>>,
     #[cfg(windows)]
     videos: HashMap<String, win::VideoReader>,
 }
@@ -56,13 +56,17 @@ impl MediaLibrary {
         }
     }
 
-    /// Decodes an audio file to 44.1 kHz stereo f32 samples.
-    pub fn audio_pcm(&mut self, path: &str) -> Result<Rc<Vec<[f32; 2]>>, Error> {
-        if let Some(hit) = self.audio.get(path) {
+    /// Decodes an audio file to stereo f32 samples at the requested rate.
+    ///
+    /// The rate is an input contract: the decoder is told which rate to
+    /// produce, so the mixer never has to guess where samples came from.
+    pub fn audio_pcm(&mut self, path: &str, sample_rate: u32) -> Result<Rc<Vec<[f32; 2]>>, Error> {
+        let key = (path.to_string(), sample_rate);
+        if let Some(hit) = self.audio.get(&key) {
             return Ok(Rc::clone(hit));
         }
-        let samples = Rc::new(decode_audio(path)?);
-        self.audio.insert(path.to_string(), Rc::clone(&samples));
+        let samples = Rc::new(decode_audio(path, sample_rate)?);
+        self.audio.insert(key, Rc::clone(&samples));
         Ok(samples)
     }
 }
@@ -78,12 +82,13 @@ fn decode_image(path: &str) -> Result<Bitmap, Error> {
 }
 
 #[cfg(windows)]
-fn decode_audio(path: &str) -> Result<Vec<[f32; 2]>, Error> {
-    win::decode_audio(path)
+fn decode_audio(path: &str, sample_rate: u32) -> Result<Vec<[f32; 2]>, Error> {
+    win::decode_audio(path, sample_rate)
 }
 
 #[cfg(not(windows))]
-fn decode_audio(path: &str) -> Result<Vec<[f32; 2]>, Error> {
+fn decode_audio(path: &str, sample_rate: u32) -> Result<Vec<[f32; 2]>, Error> {
+    let _ = sample_rate;
     Err(Error::unsupported(format!("audio import is unavailable on this platform: {path}")))
 }
 
@@ -103,7 +108,6 @@ mod win {
 
     use media_image::Bitmap;
     use media_types::Error;
-    use media_types::SAMPLE_RATE;
 
     static COM_ONCE: Once = Once::new();
     static MF_ONCE: Once = Once::new();
@@ -347,8 +351,8 @@ mod win {
         }
     }
 
-    /// Decodes the first audio stream at 44.1 kHz stereo float.
-    pub(super) fn decode_audio(path: &str) -> Result<Vec<[f32; 2]>, Error> {
+    /// Decodes the first audio stream at the requested rate, stereo float.
+    pub(super) fn decode_audio(path: &str, sample_rate: u32) -> Result<Vec<[f32; 2]>, Error> {
         ensure_mf();
         let path_w = wide(&absolute(path));
         let reader = unsafe {
@@ -370,11 +374,11 @@ mod win {
             target.SetGUID(&mf::MF_MT_MAJOR_TYPE, &mf::MFMediaType_Audio).map_err(|e| media_error("audio major", e))?;
             target.SetGUID(&mf::MF_MT_SUBTYPE, &mf::MFAudioFormat_Float).map_err(|e| media_error("audio subtype", e))?;
             target.SetUINT32(&mf::MF_MT_AUDIO_NUM_CHANNELS, 2).map_err(|e| media_error("audio channels", e))?;
-            target.SetUINT32(&mf::MF_MT_AUDIO_SAMPLES_PER_SECOND, SAMPLE_RATE).map_err(|e| media_error("audio rate", e))?;
+            target.SetUINT32(&mf::MF_MT_AUDIO_SAMPLES_PER_SECOND, sample_rate).map_err(|e| media_error("audio rate", e))?;
             target.SetUINT32(&mf::MF_MT_AUDIO_BITS_PER_SAMPLE, 32).map_err(|e| media_error("audio bits", e))?;
             target.SetUINT32(&mf::MF_MT_AUDIO_BLOCK_ALIGNMENT, 8).map_err(|e| media_error("audio block align", e))?;
             target
-                .SetUINT32(&mf::MF_MT_AUDIO_AVG_BYTES_PER_SECOND, SAMPLE_RATE * 8)
+                .SetUINT32(&mf::MF_MT_AUDIO_AVG_BYTES_PER_SECOND, sample_rate * 8)
                 .map_err(|e| media_error("audio avg bytes", e))?;
             reader
                 .SetCurrentMediaType(stream, None, &target)
