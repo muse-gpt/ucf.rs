@@ -12,3 +12,4 @@ publish.workspace = true
 geometry-types = { workspace = true }
 hardware-program = { workspace = true }
 media-image = { workspace = true }
+media-types = { workspace = true }

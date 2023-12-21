@@ -3,6 +3,7 @@
 //! 通用 RGB 图像尺度变换前端。
 
 use hardware_program::{BinOp, Expr, Program, ProgramBuilder, StructuredFunctionBuilder, Ty};
+use media_types::Error;
 
 fn b(builder: &StructuredFunctionBuilder, op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
     builder.binary(op, lhs, rhs)
@@ -28,9 +29,9 @@ impl UcfDownsample2xRgbBuilder {
     }
 
     /// 构建通用 UCF Program。输入 buffer 1，输出 buffer 2。
-    pub fn build(self) -> Result<Program, String> {
+    pub fn build(self) -> Result<Program, Error> {
         if self.source_width < 2 || self.source_height < 2 {
-            return Err("downsample source dimensions must be at least 2".into());
+            return Err(Error::invalid_input("downsample source dimensions must be at least 2"));
         }
         let destination_width = self.source_width / 2;
         let mut builder = StructuredFunctionBuilder::new("downsample_2x_rgb");
@@ -59,9 +60,9 @@ impl UcfDownsample2xRgbBuilder {
         }
         ProgramBuilder::new()
             .structured_entry(builder, Ty::f32(), Expr::ConstF32(0.0))
-            .map_err(|error| error.to_string())?
+            .map_err(|error| Error::invalid_input(error.to_string()))?
             .finish()
-            .map_err(|error| error.to_string())
+            .map_err(|error| Error::invalid_input(error.to_string()))
     }
 
     /// 返回降采样后的宽度和高度。
@@ -87,12 +88,12 @@ impl UcfUpsampleRgbBuilder {
     }
 
     /// 构建通用 UCF Program。输入 buffer 1，输出 buffer 2。
-    pub fn build(self) -> Result<Program, String> {
+    pub fn build(self) -> Result<Program, Error> {
         if self.source_width == 0 || self.source_height == 0 || self.destination_width == 0 || self.destination_height == 0 {
-            return Err("upsample dimensions must be non-zero".into());
+            return Err(Error::invalid_input("upsample dimensions must be non-zero"));
         }
         if !self.weight.is_finite() {
-            return Err("upsample weight must be finite".into());
+            return Err(Error::invalid_input("upsample weight must be finite"));
         }
         let mut builder = StructuredFunctionBuilder::new("upsample_rgb");
         let gid = builder.global_id();
@@ -122,9 +123,9 @@ impl UcfUpsampleRgbBuilder {
         }
         ProgramBuilder::new()
             .structured_entry(builder, Ty::f32(), Expr::ConstF32(0.0))
-            .map_err(|error| error.to_string())?
+            .map_err(|error| Error::invalid_input(error.to_string()))?
             .finish()
-            .map_err(|error| error.to_string())
+            .map_err(|error| Error::invalid_input(error.to_string()))
     }
 }
 

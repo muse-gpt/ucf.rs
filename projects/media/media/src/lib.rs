@@ -1,19 +1,31 @@
 //! Media facade.
 //!
-//! Re-exports only: the image storage, scene IR, raster, text, codec, audio,
-//! post and render crates stay independently usable, and downstream products
-//! depend on this facade.
+//! Re-exports only, gated per domain: every crate stays independently usable
+//! and a consumer turns off the features it does not need. `media.types` is
+//! the unconditional base contract (error, hash, time base); a pure-audio
+//! consumer can enable only `audio` and never pull in the visual stack.
 
-pub use media_audio as audio;
-pub use media_canvas as canvas;
-pub use media_codec as codec;
-pub use media_image as image;
-pub use media_post as post;
-pub use media_raster as raster;
-pub use media_render as render;
-pub use media_scene as scene;
-pub use media_text as text;
 pub use media_types as types;
 
+#[cfg(feature = "image")]
+pub use media_image as image;
+#[cfg(feature = "audio")]
+pub use media_audio as audio;
+#[cfg(feature = "canvas")]
+pub use media_canvas as canvas;
+#[cfg(feature = "codec")]
+pub use media_codec as codec;
+#[cfg(feature = "post")]
+pub use media_post as post;
+#[cfg(feature = "raster")]
+pub use media_raster as raster;
+#[cfg(feature = "render")]
+pub use media_render as render;
+#[cfg(feature = "scene")]
+pub use media_scene as scene;
+#[cfg(feature = "text")]
+pub use media_text as text;
+
+#[cfg(feature = "render")]
 pub use media_render::{RenderStats, render_project};
 pub use media_types::Error;

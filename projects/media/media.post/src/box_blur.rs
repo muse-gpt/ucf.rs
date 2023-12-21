@@ -3,6 +3,7 @@
 //! 通用二维 F32 3×3 盒式模糊前端。
 
 use hardware_program::{BinOp, Expr, Program, ProgramBuilder, StructuredFunctionBuilder, Ty};
+use media_types::Error;
 
 fn b(builder: &StructuredFunctionBuilder, op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
     builder.binary(op, lhs, rhs)
@@ -23,10 +24,12 @@ impl UcfBoxBlur3x3Builder {
     pub fn new(width: u32, height: u32) -> Self { Self { width, height } }
 
     /// 展开通用 U32 索引算术和 F32 资源读写程序。
-    pub fn build(self) -> Result<Program, String> {
+    pub fn build(self) -> Result<Program, Error> {
         let mut builder = StructuredFunctionBuilder::new("box_blur_3x3_rgb");
         let gid = builder.global_id();
-        if self.width == 0 || self.height == 0 { return Err("blur dimensions must be non-zero".into()); }
+        if self.width == 0 || self.height == 0 {
+            return Err(Error::invalid_input("blur dimensions must be non-zero"));
+        }
         let width = builder.const_u32(self.width);
         let height = builder.const_u32(self.height);
         let x = b(&builder, BinOp::Mod, gid.clone(), width.clone());
@@ -82,7 +85,11 @@ impl UcfBoxBlur3x3Builder {
         let valid = builder.select(b(&builder, BinOp::Gt, width.clone(), builder.const_u32(0)),
             b(&builder, BinOp::Gt, height, builder.const_u32(0)), Expr::ConstBool(false));
         let status = builder.select(valid, builder.const_f32(1.0), builder.const_f32(2.0));
-        ProgramBuilder::new().structured_entry(builder, Ty::f32(), status).map_err(|error| error.to_string())?.finish().map_err(|error| error.to_string())
+        ProgramBuilder::new()
+            .structured_entry(builder, Ty::f32(), status)
+            .map_err(|error| Error::invalid_input(error.to_string()))?
+            .finish()
+            .map_err(|error| Error::invalid_input(error.to_string()))
     }
 }
 

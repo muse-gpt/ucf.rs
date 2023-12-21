@@ -8,6 +8,7 @@ use geometry::smooth_polyline;
 use geometry::{Rgba, parse, parse_or};
 use geometry::{apply, fade};
 use media_audio::{AudioPlan, BgmPlan, ClipPlacement, NarrationPlacement, SfxPlacement, build_audio};
+use media_codec::DecodeLimits;
 use media_codec::Encoder;
 use media_codec::MediaLibrary;
 use media_image::Frame;
@@ -38,12 +39,15 @@ pub fn render_project(json: &str, out: &Path, progress: &mut dyn FnMut(u32, u32)
     validate(&project)?;
     let mut fonts = Fonts::load()?;
     let mut media = MediaLibrary::new();
+    // The project layer's decode budget: this renderer trusts container sizes,
+    // hosts with tighter budgets pass their own limits to the codec calls.
+    let limits = DecodeLimits::unbounded();
     let (w, h, fps) = (project.width, project.height, project.fps);
     let vignette = build_vignette(w, h, 0.55);
-    let seconds = project.duration_frames as f64 / fps as f64;
+    let seconds = project.time_base().to_seconds(project.duration_frames);
     let has_audio = project.audio.is_some();
     let plan = lower_audio(&project);
-    let audio = build_audio(&plan, &mut media)?;
+    let audio = build_audio(&plan, &mut media, limits)?;
     let bitrate = (w * h * fps / 2).clamp(2_000_000, 20_000_000);
     let mut encoder = Encoder::open(out, w, h, fps, bitrate, plan.sample_rate, has_audio)?;
     let audio_codec = encoder.audio_codec().to_string();
@@ -54,14 +58,13 @@ pub fn render_project(json: &str, out: &Path, progress: &mut dyn FnMut(u32, u32)
     let ss = supersample(&project);
     let mut scratch = Frame::new((w as f32 * ss).round() as u32, (h as f32 * ss).round() as u32);
     let total = project.duration_frames;
-    let rate = plan.sample_rate as usize;
     let mut written_samples = 0usize;
     for f in 0..total {
-        paint_frame(&project, &mut fonts, &mut media, &vignette, &mut scratch, f, &mut frame);
+        paint_frame(&project, &mut fonts, &mut media, &vignette, &mut scratch, f, &mut frame, limits);
         encoder.write_video(&frame.to_nv12(), f, fps)?;
         // Interleave audio with video in one-second blocks.
         if (f + 1) % fps == 0 || f + 1 == total {
-            let end_samples = (((f + 1) as f64 / fps as f64) * rate as f64) as usize;
+            let end_samples = project.time_base().to_samples(f + 1, plan.sample_rate);
             let end_samples = end_samples.min(audio.len() / 2);
             if end_samples > written_samples {
                 let chunk = &audio[written_samples * 2..end_samples * 2];
@@ -95,7 +98,7 @@ fn lower_audio(project: &Project) -> AudioPlan {
     AudioPlan {
         sample_rate: media_types::SAMPLE_RATE,
         channels: 2,
-        fps: project.fps,
+        time_base: project.time_base(),
         duration_frames: project.duration_frames,
         bgm: spec
             .and_then(|a| a.bgm.as_ref())
@@ -172,6 +175,7 @@ fn paint_frame(
     scratch: &mut Frame,
     frame_index: u32,
     out: &mut Frame,
+    limits: DecodeLimits,
 ) {
     out.fill(Rgba([0, 0, 0, 255]));
     // A global curve gives one continuous move for the whole film; a scene
@@ -181,7 +185,7 @@ fn paint_frame(
     let (global_zoom, global_focus, global_rotate) = (pose.zoom, pose.focus, pose.rotate);
     let scene = project.scenes.iter().find(|s| frame_index >= s.start && frame_index < s.start + s.duration);
     if let Some(scene) = scene {
-        let seconds = frame_index as f32 / project.fps as f32;
+        let seconds = project.time_base().to_seconds(frame_index) as f32;
         let local = frame_index - scene.start;
         // With a camera the scene renders off-screen, then that buffer is
         // pushed, pulled or panned into the output frame like a real lens.
@@ -197,7 +201,7 @@ fn paint_frame(
         // camera still has real pixels to show instead of an upscale.
         paint_background(target, &scene.background, seconds);
         for item in &scene.items {
-            paint_item(project, fonts, media, target, item, local, frame_index, seconds, global_zoom, 1.0);
+            paint_item(project, fonts, media, target, item, local, frame_index, seconds, global_zoom, 1.0, limits);
         }
         if global {
             // `zoom` is normalized to the whole world buffer, so the buffer's
@@ -260,6 +264,7 @@ fn paint_item(
     _seconds: f32,
     zoom: f32,
     alpha_mul: f32,
+    limits: DecodeLimits,
 ) {
     // Layout lives in output-relative units. When the world is rasterized
     // supersampled for a camera push, every pixel measure scales with it.
@@ -520,7 +525,7 @@ fn paint_item(
                 return;
             }
             // A broken import degrades to nothing; rendering the rest still wins.
-            let Ok(bitmap) = media.image(src) else {
+            let Ok(bitmap) = media.image(src, limits) else {
                 return;
             };
             let (bw, bh) = (px(*w, fw as u32), px(*h, fh as u32));
@@ -544,8 +549,8 @@ fn paint_item(
             if alpha <= 0.001 {
                 return;
             }
-            let source_seconds = (*src_in + life) as f64 / project.fps as f64;
-            let Ok(bitmap) = media.video_frame(src, source_seconds) else {
+            let source_seconds = project.time_base().to_seconds(*src_in + life);
+            let Ok(bitmap) = media.video_frame(src, source_seconds, limits) else {
                 return;
             };
             let (bw, bh) = (px(*w, fw as u32), px(*h, fh as u32));
@@ -612,7 +617,7 @@ fn paint_item(
             }
             let c = parse_or(Some(color), Rgba([120, 170, 255, 255])).with_alpha(opacity);
             let height = fh;
-            let seconds = life as f32 / project.fps as f32;
+            let seconds = project.time_base().to_seconds(life) as f32;
             let count = (*count).max(1);
             for i in 0..count {
                 let base = height * (i as f32 + 1.0) / (count as f32 + 1.0);
@@ -717,7 +722,7 @@ fn paint_item(
             }
             let local_life = local - *at;
             for child in items {
-                paint_item(project, fonts, media, frame, child, local_life, frame_index, _seconds, zoom, alpha_mul * weight);
+                paint_item(project, fonts, media, frame, child, local_life, frame_index, _seconds, zoom, alpha_mul * weight, limits);
             }
         }
         Item::Footnote { at, dur, text, size, x, y, align, color, fade_in, fade_out } => {
@@ -882,7 +887,7 @@ mod tests {
         media_codec::write_png(&path, width, height, &pixels).expect("write png");
 
         let mut media = media_codec::MediaLibrary::new();
-        let bitmap = media.image(path.to_str().unwrap()).expect("decode png");
+        let bitmap = media.image(path.to_str().unwrap(), media_codec::DecodeLimits::unbounded()).expect("decode png");
         assert_eq!((bitmap.width, bitmap.height), (width, height));
         // Row 1, column 3 should come back as encoded (allow 1 bit of slack).
         let i = (width + 3) as usize * 4;
@@ -911,7 +916,8 @@ mod tests {
         // 1b. Decode the clip back and check the pixels, so a silent import
         // failure cannot pass as a green test.
         let mut library = media_codec::MediaLibrary::new();
-        let frame = library.video_frame(source.to_str().unwrap(), 0.1).expect("decode video frame");
+        let frame =
+            library.video_frame(source.to_str().unwrap(), 0.1, media_codec::DecodeLimits::unbounded()).expect("decode video frame");
         assert_eq!((frame.width, frame.height), (160, 120));
         assert!(frame.rgba[0] > 120 && frame.rgba[1] < 100, "expected the red source, got {:?}", &frame.rgba[0..4]);
 

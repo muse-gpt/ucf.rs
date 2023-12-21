@@ -13,6 +13,28 @@ use std::rc::Rc;
 use media_image::Bitmap;
 use media_types::Error;
 
+/// Upper bounds one decode call may allocate.
+///
+/// The project layer passes these explicitly; `unbounded` matches the
+/// historical behaviour where the decoder trusts the container's own size.
+/// The cache assumes one set of limits per render (the values a render passes
+/// never change mid-run).
+#[derive(Clone, Copy, Debug)]
+pub struct DecodeLimits {
+    /// Maximum decoded pixel count (width × height) for image and video frames.
+    pub max_pixels: usize,
+    /// Maximum decoded audio sample frames.
+    pub max_audio_frames: usize,
+}
+
+impl DecodeLimits {
+    /// No cap: the container's declared size is trusted, as before limits existed.
+    #[must_use]
+    pub const fn unbounded() -> Self {
+        Self { max_pixels: usize::MAX, max_audio_frames: usize::MAX }
+    }
+}
+
 /// Per-render cache of imported media.
 #[derive(Default)]
 pub struct MediaLibrary {
@@ -29,17 +51,17 @@ impl MediaLibrary {
     }
 
     /// Decodes a still image once and returns the cached bitmap.
-    pub fn image(&mut self, path: &str) -> Result<Rc<Bitmap>, Error> {
+    pub fn image(&mut self, path: &str, limits: DecodeLimits) -> Result<Rc<Bitmap>, Error> {
         if let Some(hit) = self.images.get(path) {
             return Ok(Rc::clone(hit));
         }
-        let bitmap = Rc::new(decode_image(path)?);
+        let bitmap = Rc::new(decode_image(path, limits)?);
         self.images.insert(path.to_string(), Rc::clone(&bitmap));
         Ok(bitmap)
     }
 
     /// Returns the frame of `path` covering `seconds` from the start of the file.
-    pub fn video_frame(&mut self, path: &str, seconds: f64) -> Result<Rc<Bitmap>, Error> {
+    pub fn video_frame(&mut self, path: &str, seconds: f64, limits: DecodeLimits) -> Result<Rc<Bitmap>, Error> {
         #[cfg(windows)]
         {
             if !self.videos.contains_key(path) {
@@ -47,11 +69,11 @@ impl MediaLibrary {
                 self.videos.insert(path.to_string(), reader);
             }
             let reader = self.videos.get_mut(path).expect("video reader just inserted");
-            reader.frame_at(seconds)
+            reader.frame_at(seconds, limits)
         }
         #[cfg(not(windows))]
         {
-            let _ = seconds;
+            let _ = (seconds, limits);
             Err(Error::unsupported(format!("video import is unavailable on this platform: {path}")))
         }
     }
@@ -60,35 +82,36 @@ impl MediaLibrary {
     ///
     /// The rate is an input contract: the decoder is told which rate to
     /// produce, so the mixer never has to guess where samples came from.
-    pub fn audio_pcm(&mut self, path: &str, sample_rate: u32) -> Result<Rc<Vec<[f32; 2]>>, Error> {
+    pub fn audio_pcm(&mut self, path: &str, sample_rate: u32, limits: DecodeLimits) -> Result<Rc<Vec<[f32; 2]>>, Error> {
         let key = (path.to_string(), sample_rate);
         if let Some(hit) = self.audio.get(&key) {
             return Ok(Rc::clone(hit));
         }
-        let samples = Rc::new(decode_audio(path, sample_rate)?);
+        let samples = Rc::new(decode_audio(path, sample_rate, limits)?);
         self.audio.insert(key, Rc::clone(&samples));
         Ok(samples)
     }
 }
 
 #[cfg(windows)]
-fn decode_image(path: &str) -> Result<Bitmap, Error> {
-    win::decode_image(path)
+fn decode_image(path: &str, limits: DecodeLimits) -> Result<Bitmap, Error> {
+    win::decode_image(path, limits)
 }
 
 #[cfg(not(windows))]
-fn decode_image(path: &str) -> Result<Bitmap, Error> {
+fn decode_image(path: &str, limits: DecodeLimits) -> Result<Bitmap, Error> {
+    let _ = limits;
     Err(Error::unsupported(format!("image import is unavailable on this platform: {path}")))
 }
 
 #[cfg(windows)]
-fn decode_audio(path: &str, sample_rate: u32) -> Result<Vec<[f32; 2]>, Error> {
-    win::decode_audio(path, sample_rate)
+fn decode_audio(path: &str, sample_rate: u32, limits: DecodeLimits) -> Result<Vec<[f32; 2]>, Error> {
+    win::decode_audio(path, sample_rate, limits)
 }
 
 #[cfg(not(windows))]
-fn decode_audio(path: &str, sample_rate: u32) -> Result<Vec<[f32; 2]>, Error> {
-    let _ = sample_rate;
+fn decode_audio(path: &str, sample_rate: u32, limits: DecodeLimits) -> Result<Vec<[f32; 2]>, Error> {
+    let _ = (sample_rate, limits);
     Err(Error::unsupported(format!("audio import is unavailable on this platform: {path}")))
 }
 
@@ -108,6 +131,8 @@ mod win {
 
     use media_image::Bitmap;
     use media_types::Error;
+
+    use super::DecodeLimits;
 
     static COM_ONCE: Once = Once::new();
     static MF_ONCE: Once = Once::new();
@@ -142,7 +167,7 @@ mod win {
         });
     }
 
-    pub(super) fn decode_image(path: &str) -> Result<Bitmap, Error> {
+    pub(super) fn decode_image(path: &str, limits: DecodeLimits) -> Result<Bitmap, Error> {
         ensure_com();
         unsafe {
             let factory: IWICImagingFactory = CoCreateInstance(&CLSID_WICImagingFactory, None, CLSCTX_INPROC_SERVER)
@@ -158,6 +183,9 @@ mod win {
             frame.GetSize(&mut width, &mut height).map_err(|e| media_error("WIC GetSize", e))?;
             if width == 0 || height == 0 {
                 return Err(Error::media(format!("image {path} has zero size")));
+            }
+            if (width as usize) * (height as usize) > limits.max_pixels {
+                return Err(Error::invalid_input(format!("image {path} is {width}x{height}, above the decode limit")));
             }
 
             let converter: IWICFormatConverter =
@@ -265,7 +293,7 @@ mod win {
 
         /// Frame covering `seconds`. Requests that move forward reuse the decoder
         /// position; moving backwards reopens the source and skips ahead.
-        pub(super) fn frame_at(&mut self, seconds: f64) -> Result<Rc<Bitmap>, Error> {
+        pub(super) fn frame_at(&mut self, seconds: f64, limits: DecodeLimits) -> Result<Rc<Bitmap>, Error> {
             let frame_span = 1.0 / self.fps;
             if self.last_time >= 0.0 && seconds < self.last_time {
                 let (reader, _, _, _) = Self::configure(&self.path)?;
@@ -297,7 +325,7 @@ mod win {
                         .ok_or_else(|| Error::media(format!("video {} has no decodable frames", self.path)));
                 }
                 let Some(sample) = sample else { continue };
-                let bitmap = Rc::new(self.to_bitmap(&sample)?);
+                let bitmap = Rc::new(self.to_bitmap(&sample, limits)?);
                 self.last_time = timestamp as f64 / 10_000_000.0;
                 self.last_frame = Some(Rc::clone(&bitmap));
                 if self.last_time + frame_span > seconds {
@@ -306,12 +334,15 @@ mod win {
             }
         }
 
-        fn to_bitmap(&self, sample: &mf::IMFSample) -> Result<Bitmap, Error> {
+        fn to_bitmap(&self, sample: &mf::IMFSample, limits: DecodeLimits) -> Result<Bitmap, Error> {
             let current =
                 unsafe { self.reader.GetCurrentMediaType(self.stream) }.map_err(|e| media_error("video current type", e))?;
             let size = unsafe { current.GetUINT64(&mf::MF_MT_FRAME_SIZE) }.unwrap_or(0);
             let width = (size >> 32) as u32;
             let height = (size & 0xffff_ffff) as u32;
+            if (width as usize) * (height as usize) > limits.max_pixels {
+                return Err(Error::invalid_input(format!("video {} frame {width}x{height}, above the decode limit", self.path)));
+            }
             let buffer = unsafe { sample.ConvertToContiguousBuffer() }.map_err(|e| media_error("video buffer", e))?;
             let mut ptr: *mut u8 = std::ptr::null_mut();
             let mut len = 0u32;
@@ -352,7 +383,7 @@ mod win {
     }
 
     /// Decodes the first audio stream at the requested rate, stereo float.
-    pub(super) fn decode_audio(path: &str, sample_rate: u32) -> Result<Vec<[f32; 2]>, Error> {
+    pub(super) fn decode_audio(path: &str, sample_rate: u32, limits: DecodeLimits) -> Result<Vec<[f32; 2]>, Error> {
         ensure_mf();
         let path_w = wide(&absolute(path));
         let reader = unsafe {
@@ -406,6 +437,9 @@ mod win {
             }
             let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
             for chunk in bytes.as_chunks::<8>().0 {
+                if out.len() >= limits.max_audio_frames {
+                    return Err(Error::invalid_input(format!("audio {path} exceeds the {} frame decode limit", limits.max_audio_frames)));
+                }
                 let left = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                 let right = f32::from_le_bytes([chunk[4], chunk[5], chunk[6], chunk[7]]);
                 out.push([left, right]);

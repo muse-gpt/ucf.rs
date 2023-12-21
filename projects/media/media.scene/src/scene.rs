@@ -5,6 +5,7 @@
 //! seconds belong to the authoring layer.
 
 use media_image::Fit;
+use media_types::TimeBase;
 use serde::{Deserialize, Serialize};
 
 // Camera keyframes, easing and sampling live in the geometry library: a camera
@@ -26,6 +27,16 @@ pub struct Project {
     /// continuously, which is what makes a one-take move possible.
     #[serde(default)]
     pub camera: Vec<CameraKey>,
+}
+
+impl Project {
+    /// The project's rational time base, derived from the declared fps.
+    /// Seconds and sample offsets must be computed through this single source
+    /// instead of re-dividing the bare fields.
+    #[must_use]
+    pub fn time_base(&self) -> TimeBase {
+        TimeBase::from_fps(self.fps)
+    }
 }
 
 /// One temporal block with a background and its items.

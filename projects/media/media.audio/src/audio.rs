@@ -10,9 +10,11 @@
 //! silent. Sample rate and channels are input contracts: nothing is resampled
 //! implicitly between synthesis and the written buffer.
 
+use media_codec::DecodeLimits;
 use media_codec::MediaLibrary;
 use media_codec::parse_wav_pcm16;
 use media_types::Error;
+use media_types::TimeBase;
 use media_types::hash;
 
 /// One synthesized effect placed on the track.
@@ -55,12 +57,13 @@ pub struct BgmPlan {
 ///
 /// Placements are expressed in project frames, the output format in explicit
 /// sample rate and channels, and the bed length in frames. The plan never
-/// carries seconds: that value is derived, so it cannot contradict the others.
+/// carries seconds: that value is derived through [`TimeBase`], so it cannot
+/// contradict the other time fields.
 #[derive(Clone, Debug)]
 pub struct AudioPlan {
     pub sample_rate: u32,
     pub channels: u16,
-    pub fps: u32,
+    pub time_base: TimeBase,
     pub duration_frames: u32,
     pub bgm: Option<BgmPlan>,
     pub narration: Option<NarrationPlacement>,
@@ -70,14 +73,17 @@ pub struct AudioPlan {
 
 /// Builds the full audio bed: synthesized BGM and effects, the reserved
 /// narration slot, and every imported audio clip placed on the timeline.
-pub fn build_audio(plan: &AudioPlan, media: &mut MediaLibrary) -> Result<Vec<i16>, Error> {
+///
+/// `limits` bounds what one decode of an imported clip may allocate; the
+/// project layer passes them explicitly to the codec.
+pub fn build_audio(plan: &AudioPlan, media: &mut MediaLibrary, limits: DecodeLimits) -> Result<Vec<i16>, Error> {
     if plan.channels != 2 {
         return Err(Error::invalid_input(format!("the mixer is stereo-only, got {} channels", plan.channels)));
     }
-    if plan.sample_rate == 0 || plan.fps == 0 {
-        return Err(Error::invalid_input("sample_rate and fps must be positive"));
+    if plan.sample_rate == 0 || plan.time_base.numerator() == 0 {
+        return Err(Error::invalid_input("sample_rate and the time base must be positive"));
     }
-    let frames = (plan.duration_frames as f64 / plan.fps as f64 * plan.sample_rate as f64).ceil() as usize;
+    let frames = plan.time_base.to_samples_ceil(plan.duration_frames, plan.sample_rate);
     let mut buf = vec![0f32; frames * 2];
 
     if let Some(bgm) = &plan.bgm {
@@ -85,14 +91,14 @@ pub fn build_audio(plan: &AudioPlan, media: &mut MediaLibrary) -> Result<Vec<i16
         synth_plucks(&mut buf, bgm.volume * 0.5, plan.sample_rate);
     }
     for sfx in &plan.sfx {
-        let seconds = sfx.at_frames as f64 / plan.fps as f64;
+        let start = plan.time_base.to_samples(sfx.at_frames, plan.sample_rate);
         match sfx.kind.as_str() {
-            "whoosh" => whoosh(&mut buf, seconds, sfx.volume, plan.sample_rate),
-            "tick" => tick(&mut buf, seconds, sfx.volume, plan.sample_rate),
-            "impact" => impact(&mut buf, seconds, sfx.volume, plan.sample_rate),
-            "riser" => riser(&mut buf, seconds, sfx.volume, plan.sample_rate),
-            "glitch" => glitch(&mut buf, seconds, sfx.volume, plan.sample_rate),
-            "sub" => sub_drop(&mut buf, seconds, sfx.volume, plan.sample_rate),
+            "whoosh" => whoosh(&mut buf, start, sfx.volume, plan.sample_rate),
+            "tick" => tick(&mut buf, start, sfx.volume, plan.sample_rate),
+            "impact" => impact(&mut buf, start, sfx.volume, plan.sample_rate),
+            "riser" => riser(&mut buf, start, sfx.volume, plan.sample_rate),
+            "glitch" => glitch(&mut buf, start, sfx.volume, plan.sample_rate),
+            "sub" => sub_drop(&mut buf, start, sfx.volume, plan.sample_rate),
             _ => {}
         }
     }
@@ -102,13 +108,12 @@ pub fn build_audio(plan: &AudioPlan, media: &mut MediaLibrary) -> Result<Vec<i16
     for clip in &plan.clips {
         // A missing or undecodable import must not abort the render: the
         // clip stays silent and the rest of the film still compiles.
-        let Ok(samples) = media.audio_pcm(&clip.src, plan.sample_rate) else {
+        let Ok(samples) = media.audio_pcm(&clip.src, plan.sample_rate, limits) else {
             continue;
         };
-        let start = (clip.at_frames as f64 / plan.fps as f64 * plan.sample_rate as f64) as usize;
-        let offset = (clip.offset_frames as f64 / plan.fps as f64 * plan.sample_rate as f64) as usize;
-        let limit =
-            clip.duration_frames.map(|d| (d as f64 / plan.fps as f64 * plan.sample_rate as f64) as usize).unwrap_or(usize::MAX);
+        let start = plan.time_base.to_samples(clip.at_frames, plan.sample_rate);
+        let offset = plan.time_base.to_samples(clip.offset_frames, plan.sample_rate);
+        let limit = clip.duration_frames.map(|d| plan.time_base.to_samples(d, plan.sample_rate)).unwrap_or(usize::MAX);
         let total = frames_len(&buf);
         for i in 0..limit {
             let Some(sample) = samples.get(offset + i) else {
@@ -182,8 +187,7 @@ fn synth_plucks(buf: &mut [f32], volume: f32, sample_rate: u32) {
 }
 
 /// Filtered noise sweep for scene transitions.
-fn whoosh(buf: &mut [f32], at_seconds: f64, volume: f32, sample_rate: u32) {
-    let start = (at_seconds * sample_rate as f64) as usize;
+fn whoosh(buf: &mut [f32], start: usize, volume: f32, sample_rate: u32) {
     let len = (0.55 * sample_rate as f64) as usize;
     let total = frames_len(buf);
     let mut seed = (start as u32) | 0x9e37;
@@ -204,8 +208,7 @@ fn whoosh(buf: &mut [f32], at_seconds: f64, volume: f32, sample_rate: u32) {
 }
 
 /// Short high blip for counters and list ticks.
-fn tick(buf: &mut [f32], at_seconds: f64, volume: f32, sample_rate: u32) {
-    let start = (at_seconds * sample_rate as f64) as usize;
+fn tick(buf: &mut [f32], start: usize, volume: f32, sample_rate: u32) {
     let len = (0.06 * sample_rate as f64) as usize;
     let total = frames_len(buf);
     for i in 0..len {
@@ -221,8 +224,7 @@ fn tick(buf: &mut [f32], at_seconds: f64, volume: f32, sample_rate: u32) {
 }
 
 /// Low thud for emphasis moments.
-fn impact(buf: &mut [f32], at_seconds: f64, volume: f32, sample_rate: u32) {
-    let start = (at_seconds * sample_rate as f64) as usize;
+fn impact(buf: &mut [f32], start: usize, volume: f32, sample_rate: u32) {
     let len = (0.35 * sample_rate as f64) as usize;
     let total = frames_len(buf);
     for i in 0..len {
@@ -238,8 +240,7 @@ fn impact(buf: &mut [f32], at_seconds: f64, volume: f32, sample_rate: u32) {
 }
 
 /// Rising filtered noise, used to build tension into a cut.
-fn riser(buf: &mut [f32], at_seconds: f64, volume: f32, sample_rate: u32) {
-    let start = (at_seconds * sample_rate as f64) as usize;
+fn riser(buf: &mut [f32], start: usize, volume: f32, sample_rate: u32) {
     let len = (1.6 * sample_rate as f64) as usize;
     let total = frames_len(buf);
     let mut seed = (start as u32) | 0x5f37;
@@ -261,8 +262,7 @@ fn riser(buf: &mut [f32], at_seconds: f64, volume: f32, sample_rate: u32) {
 }
 
 /// Short bit-crushed burst for a hard cut.
-fn glitch(buf: &mut [f32], at_seconds: f64, volume: f32, sample_rate: u32) {
-    let start = (at_seconds * sample_rate as f64) as usize;
+fn glitch(buf: &mut [f32], start: usize, volume: f32, sample_rate: u32) {
     let len = (0.14 * sample_rate as f64) as usize;
     let total = frames_len(buf);
     for i in 0..len {
@@ -281,8 +281,7 @@ fn glitch(buf: &mut [f32], at_seconds: f64, volume: f32, sample_rate: u32) {
 }
 
 /// Sub-bass drop that lands under a cut.
-fn sub_drop(buf: &mut [f32], at_seconds: f64, volume: f32, sample_rate: u32) {
-    let start = (at_seconds * sample_rate as f64) as usize;
+fn sub_drop(buf: &mut [f32], start: usize, volume: f32, sample_rate: u32) {
     let len = (0.9 * sample_rate as f64) as usize;
     let total = frames_len(buf);
     for i in 0..len {
@@ -317,7 +316,7 @@ fn mix_wav(buf: &mut [f32], path: &str, delay_frames: u32, volume: f32, plan: &A
             wav.sample_rate, plan.sample_rate
         )));
     }
-    let start = (delay_frames as f64 / plan.fps as f64 * plan.sample_rate as f64) as usize;
+    let start = plan.time_base.to_samples(delay_frames, plan.sample_rate);
     let total = frames_len(buf);
     for (i, frame) in wav.frames.iter().enumerate() {
         let at = start + i;

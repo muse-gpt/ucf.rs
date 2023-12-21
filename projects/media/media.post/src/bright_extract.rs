@@ -3,6 +3,7 @@
 //! 通用 HDR 亮部提取前端。
 
 use hardware_program::{BinOp, Expr, Program, ProgramBuilder, StructuredFunctionBuilder, Ty, UnOp};
+use media_types::Error;
 
 fn b(builder: &StructuredFunctionBuilder, op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
     builder.binary(op, lhs, rhs)
@@ -20,7 +21,7 @@ impl HdrBrightExtractBuilder {
     pub fn new() -> Self { Self }
 
     /// 展开通用 F32 亮度、阈值和资源写入程序。
-    pub fn build(self) -> Result<Program, String> {
+    pub fn build(self) -> Result<Program, Error> {
         let mut builder = StructuredFunctionBuilder::new("hdr_bright_extract");
         let input = b(&builder, BinOp::Mul, builder.global_id(), builder.const_u32(3));
         let output = b(&builder, BinOp::Mul, builder.global_id(), builder.const_u32(3));
@@ -46,7 +47,11 @@ impl HdrBrightExtractBuilder {
                     builder.select(active.clone(), bright, builder.const_f32(0.0)), builder.const_f32(0.0)));
         }
         let status = builder.select(finite, builder.const_f32(1.0), builder.const_f32(2.0));
-        ProgramBuilder::new().structured_entry(builder, Ty::f32(), status).map_err(|error| error.to_string())?.finish().map_err(|error| error.to_string())
+        ProgramBuilder::new()
+            .structured_entry(builder, Ty::f32(), status)
+            .map_err(|error| Error::invalid_input(error.to_string()))?
+            .finish()
+            .map_err(|error| Error::invalid_input(error.to_string()))
     }
 }
 

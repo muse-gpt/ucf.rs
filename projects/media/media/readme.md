@@ -1,6 +1,6 @@
 # media
 
-媒体库门面。只做再导出。
+媒体库门面。只做再导出，按域提供可选 feature：`image` / `raster` / `canvas` / `text` / `scene` / `audio` / `post` / `codec` / `render`，`default` 含全部。`media.types` 是无条件的基础合同；纯音频消费者可以 `default-features = false, features = ["audio"]`，不会拉入视觉与宿主栈。
 
 ```rust
 use media::{render_project, scene::Project};
@@ -8,7 +8,7 @@ use media::{render_project, scene::Project};
 
 | 子库 | 职责 |
 |------|------|
-| `media.types` | 错误、确定性 hash、采样率 |
+| `media.types` | 错误、确定性 hash、有理时间基、项目默认采样率 |
 | `media.image` | 像素/浮点图像存储与格式转换 |
 | `media.scene` | 场景 IR |
 | `media.raster` | 软件光栅绘制 |
