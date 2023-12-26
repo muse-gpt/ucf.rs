@@ -15,6 +15,8 @@ pub use media_audio as audio;
 pub use media_canvas as canvas;
 #[cfg(feature = "codec")]
 pub use media_codec as codec;
+#[cfg(feature = "pixel")]
+pub use media_pixel as pixel;
 #[cfg(feature = "post")]
 pub use media_post as post;
 #[cfg(feature = "raster")]
