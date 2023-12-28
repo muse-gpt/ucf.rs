@@ -4,10 +4,16 @@
 //! 程序构建与 CPU 解释执行基于 `hardware-program`，颜色使用
 //! `geometry-types` 的 `LinearRgb`，`Framebuffer` 存储归 `media.image`。
 //! 本 crate 只拥有处理语义与其执行，不包含任何领域物理。
+//!
+//! 输入域、传递函数、alpha、边界采样、模糊半径与 tone mapping 时机的正式合同
+//! 成文于 [`contract`]，每个算子以 [`contract::InputDomain`] 显式标注自己消费
+//! 线性 HDR 还是显示 RGBA8；显示空间可分离盒模糊的唯一实现见 [`display_blur`]。
 
 mod bloom_scale;
 mod box_blur;
 mod bright_extract;
+mod contract;
+mod display_blur;
 mod post;
 mod post_ucf;
 mod tone_map_batch;
@@ -15,13 +21,13 @@ mod tone_map_batch;
 pub use bloom_scale::{UcfDownsample2xRgbBuilder, UcfUpsampleRgbBuilder};
 pub use box_blur::UcfBoxBlur3x3Builder;
 pub use bright_extract::HdrBrightExtractBuilder;
+pub use contract::{InputDomain, relative_radius, short_side};
+pub use display_blur::display_box_blur;
 pub use hardware_program::{post_bloom_extract, tone_map_aces};
 pub use post::{
     aces_filmic, apply_post_process, apply_tone_map, bloom_pass, composite_bloom_from_bright,
-    extract_bright_pass, to_rgba8, tone_map_rgb, DEFAULT_EXPOSURE,
+    extract_bright_pass, to_rgba8, tone_map_rgb, DEFAULT_BLOOM_INTENSITY,
+    DEFAULT_BLOOM_THRESHOLD, DEFAULT_EXPOSURE,
 };
-pub use post_ucf::{
-    apply_tone_map_ucf, bloom_pass_ucf, extract_bright_pass_ucf, DEFAULT_BLOOM_INTENSITY,
-    DEFAULT_BLOOM_THRESHOLD,
-};
+pub use post_ucf::{apply_tone_map_ucf, bloom_pass_ucf, extract_bright_pass_ucf};
 pub use tone_map_batch::tone_map_aces_batch;

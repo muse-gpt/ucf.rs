@@ -11,11 +11,6 @@ use crate::box_blur::UcfBoxBlur3x3Builder;
 use crate::post_bloom_extract;
 use crate::tone_map_aces;
 
-/// 默认泛光阈值（与 UCF 帧图 `ton_bloom` 任务一致）。
-pub const DEFAULT_BLOOM_THRESHOLD: f64 = 1.15;
-/// 默认泛光强度。
-pub const DEFAULT_BLOOM_INTENSITY: f64 = 0.18;
-
 fn run_bloom_extract(cpu: &mut CpuInterpreter, color: LinearRgb, threshold: f64) -> LinearRgb {
     cpu.with_uniform(0, Value::Vec3([color.r, color.g, color.b]));
     cpu.with_uniform(1, Value::F64(threshold));
@@ -117,7 +112,7 @@ pub fn apply_tone_map_ucf(fb: &mut Framebuffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::post::{apply_tone_map, bloom_pass, extract_bright_pass};
+    use crate::post::{DEFAULT_BLOOM_THRESHOLD, apply_tone_map, bloom_pass, extract_bright_pass};
 
     #[test]
     fn ucf_tone_map_matches_native_on_synthetic_frame() {

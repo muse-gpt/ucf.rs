@@ -1,6 +1,6 @@
 [package]
 name = "media-post"
-description = "HDR frame buffers and post-processing: CPU reference passes and UCF portable programs"
+description = "Post-processing with a written input-domain contract: linear HDR passes (CPU reference and UCF programs) and the single display-space box blur"
 readme = "readme.md"
 version.workspace = true
 edition.workspace = true

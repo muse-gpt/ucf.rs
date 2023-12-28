@@ -8,6 +8,15 @@ use media_image::{Framebuffer, FramebufferEncoding};
 /// 默认曝光乘子（线性 HDR，在色调映射之前应用）。
 pub const DEFAULT_EXPOSURE: f64 = 0.82;
 
+/// 默认泛光阈值：线性 HDR 下高于显示白（1.0）的能量才参与泛光。
+///
+/// 这是 CPU 与 UCF 双路径共同的唯一默认来源（合并前 CPU 硬编码 0.85、UCF
+/// 携带 1.15 的不一致已消除）；UCF 帧图 `ton_bloom` 任务与该值一致。
+pub const DEFAULT_BLOOM_THRESHOLD: f64 = 1.15;
+
+/// 默认泛光强度，与 [`DEFAULT_BLOOM_THRESHOLD`] 同源。
+pub const DEFAULT_BLOOM_INTENSITY: f64 = 0.18;
+
 /// ACES 拟合色调映射（单通道）。
 pub fn aces_filmic(x: f64) -> f64 {
     let x = x.max(0.0);
@@ -173,10 +182,11 @@ pub fn apply_tone_map(fb: &mut Framebuffer) {
     fb.encoding = FramebufferEncoding::Display;
 }
 
-/// 后处理链：线性 HDR 上泛光，再一次色调映射。
+/// 后处理链：线性 HDR 上泛光（默认参数见 [`DEFAULT_BLOOM_THRESHOLD`] 与
+/// [`DEFAULT_BLOOM_INTENSITY`]），再一次色调映射。
 pub fn apply_post_process(fb: &mut Framebuffer, bloom: bool) {
     if bloom {
-        bloom_pass(fb, 0.85, 0.35);
+        bloom_pass(fb, DEFAULT_BLOOM_THRESHOLD, DEFAULT_BLOOM_INTENSITY);
     }
     apply_tone_map(fb);
 }
