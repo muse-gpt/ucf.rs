@@ -14,6 +14,8 @@ mod box_blur;
 mod bright_extract;
 mod contract;
 mod display_blur;
+mod display_ops;
+mod effect;
 mod post;
 mod post_ucf;
 mod tone_map_batch;
@@ -23,6 +25,8 @@ pub use box_blur::UcfBoxBlur3x3Builder;
 pub use bright_extract::HdrBrightExtractBuilder;
 pub use contract::{InputDomain, relative_radius, short_side};
 pub use display_blur::display_box_blur;
+pub use display_ops::{Bloom, Blur, Chroma, Displace, Grain, Sweep};
+pub use effect::{Effect, EffectContext, EffectStack};
 pub use hardware_program::{post_bloom_extract, tone_map_aces};
 pub use post::{
     aces_filmic, apply_post_process, apply_tone_map, bloom_pass, composite_bloom_from_bright,
