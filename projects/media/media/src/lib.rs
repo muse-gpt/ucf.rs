@@ -17,6 +17,8 @@ pub use media_canvas as canvas;
 pub use media_codec as codec;
 #[cfg(feature = "pixel")]
 pub use media_pixel as pixel;
+#[cfg(feature = "particles")]
+pub use media_particles as particles;
 #[cfg(feature = "post")]
 pub use media_post as post;
 #[cfg(feature = "raster")]
