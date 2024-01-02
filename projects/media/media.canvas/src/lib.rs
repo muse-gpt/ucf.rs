@@ -1,9 +1,10 @@
 //! Canvas building blocks shared by drawing tools.
 //!
 //! A canvas is a size plus an ordered layer stack; a brush is a soft round stamp
-//! plus a flow. Nothing here knows about documents, tools or UI — the products
-//! (`OpenPaint`, `OpenPhoto`, `OpenPixel`, `OpenVoxel`) own their own models and
-//! use these pieces to composite and to paint.
+//! plus a flow; [`ImageDoc`] adds the bitmap document on top: canvas size,
+//! background and the image-placement rule. Tools and UI stay out — the
+//! products (`OpenPaint`, `OpenPhoto`, `OpenPixel`, `OpenVoxel`) own their
+//! specific document shapes and use these pieces to composite and to paint.
 //!
 //! ```rust
 //! use geometry::Rgba;
@@ -19,7 +20,9 @@
 //! ```
 
 pub mod brush;
+pub mod doc;
 pub mod layer;
 
 pub use brush::{Brush, BrushMode};
+pub use doc::ImageDoc;
 pub use layer::{BlendMode, Layer, LayerStack};

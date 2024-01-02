@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn non_finite_and_malformed_inputs_are_rejected() {
-        // JSON literals above cannot carry NaN/Infinity, so build the spec.
+        // JSON literals above cannot carry NaN or Infinity, so build the spec.
         let spec = StackSpec { effects: vec![EffectSpec::Grain { strength: f32::NAN, density: 100.0 }] };
         assert_eq!(spec.compile().err().unwrap().code(), "invalid_input");
 
