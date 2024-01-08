@@ -134,7 +134,6 @@ mod win {
 
     use super::DecodeLimits;
 
-    static COM_ONCE: Once = Once::new();
     static MF_ONCE: Once = Once::new();
     /// `MF_SOURCE_READERF_ENDOFSTREAM`
     const FLAG_END_OF_STREAM: u32 = 2;
@@ -155,9 +154,16 @@ mod win {
     }
 
     fn ensure_com() {
-        COM_ONCE.call_once(|| unsafe {
-            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-        });
+        // COM apartments are per-thread: a process-wide `Once` left every
+        // thread but the first uninitialized, so WIC calls from later threads
+        // failed with CO_E_NOTINITIALIZED. Initialize once per thread instead;
+        // a thread already initialized in another apartment keeps its model.
+        thread_local! {
+            static COM_INITIALIZED: () = unsafe {
+                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+            };
+        }
+        COM_INITIALIZED.with(|()| ());
     }
 
     fn ensure_mf() {
