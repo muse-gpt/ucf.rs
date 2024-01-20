@@ -23,7 +23,7 @@ pub use media_particles as particles;
 pub use media_post as post;
 #[cfg(feature = "raster")]
 pub use media_raster as raster;
-#[cfg(feature = "render")]
+#[cfg(any(feature = "render", feature = "image-pipeline"))]
 pub use media_render as render;
 #[cfg(feature = "scene")]
 pub use media_scene as scene;
@@ -32,4 +32,6 @@ pub use media_text as text;
 
 #[cfg(feature = "render")]
 pub use media_render::{RenderStats, render_project};
+#[cfg(feature = "image-pipeline")]
+pub use media_render::{ImageOperation, ProcessedImage, process_image};
 pub use media_types::Error;

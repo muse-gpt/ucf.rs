@@ -1,6 +1,6 @@
 [package]
 name = "media-render"
-description = "Frame orchestration: paint a project into frames, mix audio and push both to the encoder"
+description = "Frame orchestration: scene films with audio, and a scene-free image pipeline (decode, process, encode)"
 readme = "readme.md"
 version.workspace = true
 edition.workspace = true
@@ -10,12 +10,18 @@ publish.workspace = true
 
 [dependencies]
 serde = { workspace = true }
-serde_json = { workspace = true }
-geometry = { workspace = true }
 media-types = { workspace = true }
-media-scene = { workspace = true }
 media-image = { workspace = true }
-media-raster = { workspace = true }
-media-text = { workspace = true }
 media-codec = { workspace = true }
-media-audio = { workspace = true }
+geometry = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+media-scene = { workspace = true, optional = true }
+media-raster = { workspace = true, optional = true }
+media-text = { workspace = true, optional = true }
+media-audio = { workspace = true, optional = true }
+media-post = { workspace = true, optional = true }
+
+[features]
+default = ["scene"]
+scene = ["dep:geometry", "dep:serde_json", "dep:media-scene", "dep:media-raster", "dep:media-text", "dep:media-audio"]
+image-pipeline = ["dep:media-post"]
