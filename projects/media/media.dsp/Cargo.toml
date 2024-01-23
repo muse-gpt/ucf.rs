@@ -1,0 +1,11 @@
+[package]
+name = "media-dsp"
+description = "Deterministic DSP primitives: xorshift32 random stream, biquad filters, envelopes, pitch glide and equal-power panning"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]

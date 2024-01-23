@@ -1,6 +1,6 @@
 [package]
 name = "media"
-description = "Media facade: per-domain optional re-exports over image, raster, pixel, particles, canvas, scene, text, codec, audio, post and render"
+description = "Media facade: per-domain optional re-exports over image, raster, pixel, particles, canvas, scene, text, codec, dsp, synthesis, audio, post and render"
 readme = "readme.md"
 version.workspace = true
 edition.workspace = true
@@ -18,12 +18,14 @@ media-pixel = { workspace = true, optional = true }
 media-particles = { workspace = true, optional = true }
 media-text = { workspace = true, optional = true }
 media-codec = { workspace = true, optional = true }
+media-dsp = { workspace = true, optional = true }
+media-synthesis = { workspace = true, optional = true }
 media-audio = { workspace = true, optional = true }
 media-render = { workspace = true, optional = true }
 media-post = { workspace = true, optional = true }
 
 [features]
-default = ["image", "scene", "raster", "canvas", "pixel", "particles", "text", "codec", "audio", "post", "render", "image-pipeline"]
+default = ["image", "scene", "raster", "canvas", "pixel", "particles", "text", "codec", "dsp", "synthesis", "audio", "post", "render", "image-pipeline"]
 image = ["dep:media-image"]
 scene = ["dep:media-scene", "image"]
 raster = ["dep:media-raster", "image"]
@@ -32,6 +34,8 @@ pixel = ["dep:media-pixel", "image"]
 particles = ["dep:media-particles", "image"]
 text = ["dep:media-text", "raster", "scene"]
 codec = ["dep:media-codec", "image"]
+dsp = ["dep:media-dsp"]
+synthesis = ["dep:media-synthesis", "dsp"]
 audio = ["dep:media-audio", "codec"]
 post = ["dep:media-post"]
 render = ["dep:media-render", "media-render/scene", "scene", "raster", "text", "codec", "audio"]

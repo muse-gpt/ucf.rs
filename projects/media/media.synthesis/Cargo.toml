@@ -1,0 +1,17 @@
+[package]
+name = "media-synthesis"
+description = "Parametric sound synthesis: the eight effect families, the SfxSpec input contract, named presets and deterministic rendering"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+media-types = { workspace = true }
+media-dsp = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
