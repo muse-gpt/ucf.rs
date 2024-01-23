@@ -1,13 +1,14 @@
-//! 显示空间艺术算子：blur、bloom、色差、位移、扫光、颗粒。
+//! 显示空间艺术算子：blur、色差、位移、扫光、颗粒——共五个。
 //!
 //! 全部算子的输入域是 [`InputDomain::DisplayRgba8`]——8 位显示字节按合同
 //! 直接参与算术（见 [`crate::contract`]），不冒充线性物理运算。数值语义
 //! 逐值吸收自下游效果栈：相对短边的半径合同、clamp-to-edge、straight
 //! alpha 直通与帧号派生的颗粒种子全部保持原样。
 //!
-//! 显示域 `Bloom` 是艺术算子；线性 HDR 的物理泛光是
-//! [`crate::bloom_pass`]（阈值提取 + 多尺度金字塔 + 无早截断），两者域不同、
-//! 合同不同，不是重复实现。
+//! bloom 不在本模块：效果栈的 `bloom` 一律绑定线性 HDR 物理路径
+//! [`crate::bloom_pass`]（阈值提取 + 多尺度金字塔 + 无早截断），其显示域
+//! 进出由 [`crate::stack_bloom`] 执行成文的 EOTF 对转换。禁止在此重新
+//! 引入同名显示算子——同名双 bloom 已被裁决撤销。
 
 use geometry_types::Rgba;
 use media_image::Frame;
@@ -44,66 +45,6 @@ impl Effect for Blur {
             return;
         }
         display_box_blur(frame, radius, 3);
-    }
-}
-
-/// 阈值亮部、模糊、加回：显示空间的辉光艺术效果。
-///
-/// 与线性 HDR 的 [`crate::bloom_pass`] 不同，本算子在 RGBA8 字节上工作：
-/// BT.601 整数权重亮度、亮部原值硬拷贝、加回逐通道 min(255) 早截断——
-/// 这是其作者面合同的一部分，不是物理路径。
-pub struct Bloom {
-    /// 参与辉光的亮度阈值，0..1（乘 255 后与 u8 亮度比较）。
-    pub threshold: f32,
-    /// 暂存帧模糊半径，相对短边。
-    pub radius: f32,
-    /// 加色强度，0..4。
-    pub strength: f32,
-}
-
-impl Bloom {
-    #[must_use]
-    pub fn new(threshold: f32, radius: f32, strength: f32) -> Self {
-        Self { threshold, radius, strength }
-    }
-}
-
-impl Effect for Bloom {
-    fn name(&self) -> &'static str {
-        "bloom"
-    }
-
-    fn input_domain(&self) -> InputDomain {
-        InputDomain::DisplayRgba8
-    }
-
-    fn apply(&self, frame: &mut Frame, _ctx: &EffectContext) {
-        let mut bright = Frame::new(frame.width, frame.height);
-        let threshold = (self.threshold.clamp(0.0, 1.0) * 255.0) as u32;
-        for index in 0..frame.width as usize * frame.height as usize {
-            let i = index * 4;
-            let luma = (frame.pixels[i] as u32 * 299
-                + frame.pixels[i + 1] as u32 * 587
-                + frame.pixels[i + 2] as u32 * 114)
-                / 1000;
-            if luma > threshold {
-                bright.pixels[i] = frame.pixels[i];
-                bright.pixels[i + 1] = frame.pixels[i + 1];
-                bright.pixels[i + 2] = frame.pixels[i + 2];
-                bright.pixels[i + 3] = 255;
-            }
-        }
-        let radius = relative_radius(self.radius.clamp(0.0, 1.0), frame, 0.08);
-        if radius > 0 {
-            display_box_blur(&mut bright, radius, 2);
-        }
-        let strength = self.strength.clamp(0.0, 4.0);
-        for i in (0..frame.pixels.len()).step_by(4) {
-            for k in 0..3 {
-                let added = (bright.pixels[i + k] as f32 * strength) as u32;
-                frame.pixels[i + k] = (frame.pixels[i + k] as u32 + added).min(255) as u8;
-            }
-        }
     }
 }
 
@@ -309,7 +250,7 @@ mod tests {
         EffectContext::new(frame, TimeBase::from_fps(30))
     }
 
-    /// 带高频红通道细节与一个亮团的测试帧（不依赖 raster）。
+    /// 带高频红通道细节的测试帧（不依赖 raster）。
     fn scene(width: u32, height: u32) -> Frame {
         let mut frame = Frame::new(width, height);
         for y in 0..height {
@@ -320,14 +261,6 @@ mod tests {
                 frame.pixels[i + 1] = 30;
                 frame.pixels[i + 2] = 40;
                 frame.pixels[i + 3] = 255;
-            }
-        }
-        // 中央亮团，供 bloom 的阈值命中。
-        let (cx, cy) = (width / 2, height / 2);
-        for y in cy.saturating_sub(6)..(cy + 6).min(height) {
-            for x in cx.saturating_sub(6)..(cx + 6).min(width) {
-                let i = ((y * width + x) as usize) * 4;
-                frame.pixels[i..i + 3].copy_from_slice(&[250, 240, 210]);
             }
         }
         frame
@@ -358,14 +291,6 @@ mod tests {
         Blur::new(1.0).apply(&mut frame, &ctx(0));
         let after = red_stddev(&frame);
         assert!(after < before * 0.9, "detail {before} -> {after}");
-    }
-
-    #[test]
-    fn bloom_adds_energy_around_highlights() {
-        let mut frame = scene(96, 54);
-        let before = red_mean(&frame);
-        Bloom::new(0.5, 0.6, 0.7).apply(&mut frame, &ctx(0));
-        assert!(red_mean(&frame) > before, "{} -> {}", before, red_mean(&frame));
     }
 
     #[test]
@@ -419,13 +344,12 @@ mod tests {
     fn display_operators_declare_their_domain() {
         let ops: Vec<Box<dyn Effect>> = vec![
             Box::new(Blur::new(0.5)),
-            Box::new(Bloom::new(0.5, 0.5, 0.5)),
             Box::new(Chroma::new(0.01)),
             Box::new(Displace::new(0.01, 2.0, 1.0)),
             Box::new(Sweep::new(0.0, 1.0, 0.5, Rgba([1, 2, 3, 255]), 1.0)),
             Box::new(Grain::new(0.2, 900.0)),
         ];
-        assert_eq!(ops.iter().map(|op| op.name().to_string()).collect::<Vec<_>>(), vec!["blur", "bloom", "chroma", "displace", "sweep", "grain"]);
+        assert_eq!(ops.iter().map(|op| op.name().to_string()).collect::<Vec<_>>(), vec!["blur", "chroma", "displace", "sweep", "grain"]);
         for op in &ops {
             assert_eq!(op.input_domain(), InputDomain::DisplayRgba8);
         }

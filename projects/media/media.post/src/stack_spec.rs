@@ -8,15 +8,23 @@
 //! [`media_types::Error::invalid_input`]，不做静默回落。钳制语义仍住在算子
 //! 本身（直接 Rust 作者面逐值保持原行为）；声明面把同一参数域当作输入合同
 //! 强制执行，绑定层只做宿主值到 [`StackSpec`] 的映射。
+//!
+//! `bloom` kind 绑定线性 HDR 物理路径（[`crate::bloom_pass`] 经
+//! [`crate::stack_bloom`] 的成文域转换）：参数是 HDR 语义的 `threshold` 与
+//! `intensity`，缺省落在 [`crate::DEFAULT_BLOOM_THRESHOLD`] /
+//! [`crate::DEFAULT_BLOOM_INTENSITY`]；没有显示域半径参数，扩散尺度由金字塔
+//! 层级合同表达。
 
 use geometry_types::Rgba;
 use serde::Deserialize;
 
 use media_types::Error;
 
-use crate::display_ops::{Bloom, Blur, Chroma, Displace, Grain, Sweep};
+use crate::display_ops::{Blur, Chroma, Displace, Grain, Sweep};
 use crate::effect::{Effect, EffectStack};
 use crate::generative::{BeamsEffect, ParticlesEffect};
+use crate::post::{DEFAULT_BLOOM_INTENSITY, DEFAULT_BLOOM_THRESHOLD};
+use crate::stack_bloom::Bloom;
 use media_particles::{Beams, Particles};
 
 /// 一份完整的效果栈声明。
@@ -33,10 +41,13 @@ pub struct StackSpec {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum EffectSpec {
     Blur { amount: f32 },
+    /// 线性 HDR 物理泛光（成文域转换见 [`crate::contract`]），缺省即
+    /// [`crate::DEFAULT_BLOOM_THRESHOLD`] / [`crate::DEFAULT_BLOOM_INTENSITY`]。
     Bloom {
-        threshold: f32,
-        radius: f32,
-        strength: f32,
+        #[serde(default)]
+        threshold: Option<f64>,
+        #[serde(default)]
+        intensity: Option<f64>,
     },
     Chroma { amount: f32 },
     Displace {
@@ -98,11 +109,19 @@ impl EffectSpec {
                 let amount = in_range("blur", "amount", *amount, 0.0, 1.0)?;
                 Ok(Box::new(Blur::new(amount)))
             }
-            Self::Bloom { threshold, radius, strength } => {
-                let threshold = in_range("bloom", "threshold", *threshold, 0.0, 1.0)?;
-                let radius = in_range("bloom", "radius", *radius, 0.0, 1.0)?;
-                let strength = in_range("bloom", "strength", *strength, 0.0, 4.0)?;
-                Ok(Box::new(Bloom::new(threshold, radius, strength)))
+            Self::Bloom { threshold, intensity } => {
+                // HDR 能量域：阈值与强度都是线性语义，0..=4 覆盖上转换后
+                // 显示白（2.0）的两倍；超过可达能量的阈值只是不发光，但
+                // 视为可疑输入仍拒绝。缺省用物理路径的默认常数。
+                let threshold = match threshold {
+                    Some(value) => in_range_f64("bloom", "threshold", *value, 0.0, 4.0)?,
+                    None => DEFAULT_BLOOM_THRESHOLD,
+                };
+                let intensity = match intensity {
+                    Some(value) => in_range_f64("bloom", "intensity", *value, 0.0, 4.0)?,
+                    None => DEFAULT_BLOOM_INTENSITY,
+                };
+                Ok(Box::new(Bloom::new(threshold, intensity)))
             }
             Self::Chroma { amount } => {
                 let amount = in_range("chroma", "amount", *amount, 0.0, 0.1)?;
@@ -184,6 +203,17 @@ fn in_range(op: &str, param: &str, value: f32, min: f32, max: f32) -> Result<f32
     }
 }
 
+/// f64 参数的同一合同（线性 HDR 算子用 f64 通道）。
+fn in_range_f64(op: &str, param: &str, value: f64, min: f64, max: f64) -> Result<f64, Error> {
+    if value.is_finite() && value >= min && value <= max {
+        Ok(value)
+    } else {
+        Err(Error::invalid_input(format!(
+            "{op}.{param} must be within {min}..={max}, got {value}"
+        )))
+    }
+}
+
 /// 只要求有限。
 fn finite(op: &str, param: &str, value: f32) -> Result<f32, Error> {
     if value.is_finite() {
@@ -238,7 +268,7 @@ mod tests {
         // The fireside preset expressed as the neutral spec shape.
         let json = r##"{
             "effects": [
-                { "kind": "bloom", "threshold": 0.45, "radius": 0.7, "strength": 0.75 },
+                { "kind": "bloom", "threshold": 1.15, "intensity": 0.3 },
                 { "kind": "particles", "count": 140, "seed": 31,
                   "color": "#ffc478", "size": 0.0025, "speed": -0.18, "drift": 0.04, "twinkle": 0.85 },
                 { "kind": "sweep", "angle": -18.0, "speed": 0.05, "width": 0.42,
@@ -254,10 +284,33 @@ mod tests {
     }
 
     #[test]
+    fn bloom_defaults_to_the_physical_path_constants() {
+        // Omitted HDR parameters land on the shared CPU/UCF defaults, byte for
+        // byte identical to stating them explicitly.
+        let implicit = StackSpec::from_json(r#"{"effects":[{"kind":"bloom"}]}"#)
+            .unwrap()
+            .compile()
+            .unwrap();
+        let explicit = StackSpec::from_json(&format!(
+            r#"{{"effects":[{{"kind":"bloom","threshold":{DEFAULT_BLOOM_THRESHOLD},"intensity":{DEFAULT_BLOOM_INTENSITY}}}]}}"#
+        ))
+        .unwrap()
+        .compile()
+        .unwrap();
+        let render = |stack: &EffectStack| {
+            let mut frame = scene();
+            stack.apply(&mut frame, &EffectContext::new(0, TimeBase::from_fps(30)));
+            frame.pixels
+        };
+        assert_eq!(render(&implicit), render(&explicit));
+    }
+
+    #[test]
     fn out_of_range_parameters_error_explicitly() {
         for json in [
             r#"{"effects":[{"kind":"blur","amount":1.5}]}"#,
-            r#"{"effects":[{"kind":"bloom","threshold":0.5,"radius":0.5,"strength":9.0}]}"#,
+            r#"{"effects":[{"kind":"bloom","threshold":9.0,"intensity":0.5}]}"#,
+            r#"{"effects":[{"kind":"bloom","threshold":0.5,"intensity":-0.1}]}"#,
             r#"{"effects":[{"kind":"chroma","amount":0.5}]}"#,
             r#"{"effects":[{"kind":"displace","amount":0.5,"frequency":1.0,"speed":1.0}]}"#,
             r##"{"effects":[{"kind":"sweep","angle":0.0,"speed":1.0,"width":0.0,"color":"#fff","strength":1.0}]}"##,
@@ -274,6 +327,11 @@ mod tests {
     fn non_finite_and_malformed_inputs_are_rejected() {
         // JSON literals above cannot carry NaN or Infinity, so build the spec.
         let spec = StackSpec { effects: vec![EffectSpec::Grain { strength: f32::NAN, density: 100.0 }] };
+        assert_eq!(spec.compile().err().unwrap().code(), "invalid_input");
+
+        let spec = StackSpec { effects: vec![EffectSpec::Bloom { threshold: Some(f64::NAN), intensity: None }] };
+        assert_eq!(spec.compile().err().unwrap().code(), "invalid_input");
+        let spec = StackSpec { effects: vec![EffectSpec::Bloom { threshold: None, intensity: Some(f64::INFINITY) }] };
         assert_eq!(spec.compile().err().unwrap().code(), "invalid_input");
 
         let error = StackSpec::from_json(r#"{"effects":[{"kind":"grain","strength":0.1,"density":100,"extra":true}]}"#);

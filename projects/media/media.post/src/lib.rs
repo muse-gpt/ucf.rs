@@ -8,8 +8,10 @@
 //! 输入域、传递函数、alpha、边界采样、模糊半径与 tone mapping 时机的正式合同
 //! 成文于 [`contract`]，每个算子以 [`contract::InputDomain`] 显式标注自己消费
 //! 线性 HDR 还是显示 RGBA8；显示空间可分离盒模糊的唯一实现见 [`display_blur`]。
-//! 显示空间算子（[`display_ops`]）、有序栈合同（[`effect`]）、中立 JSON 栈
-//! 声明（[`stack_spec`]）与通用参数组合（[`presets`]）共同构成效果栈；
+//! 显示空间算子（[`display_ops`]，五个：blur/chroma/displace/sweep/grain）、
+//! 有序栈合同（[`effect`]）、中立 JSON 栈声明（[`stack_spec`]）与通用参数组合
+//! （[`presets`]）共同构成效果栈；栈的 `bloom` 绑定 [`post`] 的线性 HDR 物理
+//! 路径，其显式域转换由 [`stack_bloom`] 执行、合同成文于 [`contract`]。
 //! 粒子与光束的生成求值归 `media.particles`，本 crate 只做栈适配。
 
 mod bloom_scale;
@@ -24,6 +26,7 @@ mod generative;
 mod post;
 mod post_ucf;
 mod presets;
+mod stack_bloom;
 mod stack_spec;
 mod tone_map_batch;
 
@@ -33,7 +36,7 @@ pub use bright_extract::HdrBrightExtractBuilder;
 pub use contract::{InputDomain, relative_radius, short_side};
 pub use develop::{Adjustments, DEVELOP_BLUR_COEFFICIENT};
 pub use display_blur::display_box_blur;
-pub use display_ops::{Bloom, Blur, Chroma, Displace, Grain, Sweep};
+pub use display_ops::{Blur, Chroma, Displace, Grain, Sweep};
 pub use effect::{Effect, EffectContext, EffectStack};
 pub use generative::{BeamsEffect, ParticlesEffect};
 pub use hardware_program::{post_bloom_extract, tone_map_aces};
@@ -44,5 +47,6 @@ pub use post::{
 };
 pub use post_ucf::{apply_tone_map_ucf, bloom_pass_ucf, extract_bright_pass_ucf};
 pub use presets::{Preset, PRESETS, preset, preset_names, volumetric};
+pub use stack_bloom::{Bloom, BLOOM_HDR_HEADROOM};
 pub use stack_spec::{EffectSpec, StackSpec};
 pub use tone_map_batch::tone_map_aces_batch;
