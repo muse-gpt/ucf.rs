@@ -25,6 +25,7 @@ members = [
     "projects/media/media.scene",
     "projects/media/media.raster",
     "projects/media/media.canvas",
+    "projects/media/media.vector",
     "projects/media/media.pixel",
     "projects/media/media.particles",
     "projects/media/media.text",
@@ -59,6 +60,7 @@ default-members = [
     "projects/media/media.scene",
     "projects/media/media.raster",
     "projects/media/media.canvas",
+    "projects/media/media.vector",
     "projects/media/media.pixel",
     "projects/media/media.particles",
     "projects/media/media.text",
@@ -115,6 +117,7 @@ media-image = { path = "projects/media/media.image" }
 media-scene = { path = "projects/media/media.scene" }
 media-raster = { path = "projects/media/media.raster" }
 media-canvas = { path = "projects/media/media.canvas" }
+media-vector = { path = "projects/media/media.vector" }
 media-pixel = { path = "projects/media/media.pixel" }
 media-particles = { path = "projects/media/media.particles" }
 media-text = { path = "projects/media/media.text" }

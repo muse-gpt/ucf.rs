@@ -8,5 +8,6 @@ pub use geometry_types as types;
 
 pub use geometry_motion::{CameraKey, CameraPose, Ease, apply, camera_at, fade};
 pub use geometry_types::{
-    Affine2, Camera, LinearRgb, Rect, Rgba, Size, Vec2, centroid, distance, lerp, parse, parse_or, point_in_polygon, smooth_polyline,
+    Affine2, Camera, LinearRgb, Rect, Rgba, Size, Vec2, centroid, distance, lerp, parse, parse_or, point_in_polygon,
+    rounded_rect_outline, smooth_polyline,
 };

@@ -33,6 +33,8 @@ pub use media_scene as scene;
 pub use media_synthesis as synthesis;
 #[cfg(feature = "text")]
 pub use media_text as text;
+#[cfg(feature = "vector")]
+pub use media_vector as vector;
 
 #[cfg(feature = "image-pipeline")]
 pub use media_render::{ImageOperation, ProcessedImage, process_image};

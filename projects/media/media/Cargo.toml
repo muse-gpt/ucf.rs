@@ -14,6 +14,7 @@ media-image = { workspace = true, optional = true }
 media-scene = { workspace = true, optional = true }
 media-raster = { workspace = true, optional = true }
 media-canvas = { workspace = true, optional = true }
+media-vector = { workspace = true, optional = true }
 media-pixel = { workspace = true, optional = true }
 media-particles = { workspace = true, optional = true }
 media-text = { workspace = true, optional = true }
@@ -30,6 +31,7 @@ image = ["dep:media-image"]
 scene = ["dep:media-scene", "image"]
 raster = ["dep:media-raster", "image"]
 canvas = ["dep:media-canvas", "raster"]
+vector = ["dep:media-vector"]
 pixel = ["dep:media-pixel", "image"]
 particles = ["dep:media-particles", "image"]
 text = ["dep:media-text", "raster", "scene"]

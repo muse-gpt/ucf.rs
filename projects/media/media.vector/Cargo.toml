@@ -1,0 +1,17 @@
+[package]
+name = "media-vector"
+description = "Vector documents: shapes, layers, the input contract and the normalized drawing representation shared by the SVG encoder and the raster lowering"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+media-types = { workspace = true }
+geometry = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
