@@ -92,24 +92,25 @@ pub fn render_project(json: &str, out: &Path, progress: &mut dyn FnMut(u32, u32)
 /// Lowers the scene's `AudioSpec` into the mixer's neutral track plan.
 ///
 /// The plan carries the project default sample rate; `media.audio` never sees
-/// the scene IR, so the audio crate stays free of scene semantics.
-fn lower_audio(project: &Project) -> AudioPlan {
+/// the scene IR, so the audio crate stays free of scene semantics. This is
+/// the authoritative lowering: hosts and tests reuse it instead of building
+/// plans by hand.
+#[must_use]
+pub fn lower_audio(project: &Project) -> AudioPlan {
     let spec = project.audio.as_ref();
     AudioPlan {
         sample_rate: media_types::SAMPLE_RATE,
         channels: 2,
         time_base: project.time_base(),
         duration_frames: project.duration_frames,
-        bgm: spec
-            .and_then(|a| a.bgm.as_ref())
-            .map(|b| BgmPlan { volume: b.volume, mood: b.mood.clone() }),
-        narration: spec
-            .and_then(|a| a.narration.as_ref())
-            .map(|n| NarrationPlacement { wav: n.wav.clone(), delay_frames: n.delay_frames, volume: n.volume }),
+        bgm: spec.and_then(|a| a.bgm.as_ref()).map(|b| BgmPlan { volume: b.volume, mood: b.mood.clone() }),
+        narration: spec.and_then(|a| a.narration.as_ref()).map(|n| NarrationPlacement {
+            wav: n.wav.clone(),
+            delay_frames: n.delay_frames,
+            volume: n.volume,
+        }),
         sfx: spec
-            .map(|a| {
-                a.sfx.iter().map(|s| SfxPlacement { kind: s.kind.clone(), at_frames: s.at, volume: s.volume }).collect()
-            })
+            .map(|a| a.sfx.iter().map(|s| SfxPlacement { kind: s.kind.clone(), at_frames: s.at, volume: s.volume }).collect())
             .unwrap_or_default(),
         clips: spec
             .map(|a| {
@@ -121,6 +122,8 @@ fn lower_audio(project: &Project) -> AudioPlan {
                         duration_frames: c.dur,
                         offset_frames: c.offset_frames,
                         volume: c.volume,
+                        fade_in_frames: 0,
+                        fade_out_frames: 0,
                     })
                     .collect()
             })
@@ -722,7 +725,19 @@ fn paint_item(
             }
             let local_life = local - *at;
             for child in items {
-                paint_item(project, fonts, media, frame, child, local_life, frame_index, _seconds, zoom, alpha_mul * weight, limits);
+                paint_item(
+                    project,
+                    fonts,
+                    media,
+                    frame,
+                    child,
+                    local_life,
+                    frame_index,
+                    _seconds,
+                    zoom,
+                    alpha_mul * weight,
+                    limits,
+                );
             }
         }
         Item::Footnote { at, dur, text, size, x, y, align, color, fade_in, fade_out } => {
@@ -870,6 +885,51 @@ mod tests {
         assert!(std::fs::metadata(&out).unwrap().len() > 500);
     }
 
+    /// The OpenCut sound-effect path end to end inside the audio domain: the
+    /// scene wire JSON lowers through `lower_audio`, the bed is mixed from
+    /// `media.synthesis` renders, and the placed effects are audible, finite
+    /// and byte-identical across builds (the seed contract).
+    #[test]
+    fn sfx_bed_is_audible_deterministic_and_lowers_from_wire_json() {
+        let json = serde_json::json!({
+            "width": 64, "height": 64, "fps": 30, "durationFrames": 90,
+            "scenes": [],
+            "audio": { "sfx": [
+                { "at": 10, "kind": "whoosh", "volume": 0.8 },
+                { "at": 60, "kind": "impact", "volume": 0.6 }
+            ] }
+        })
+        .to_string();
+        let project: media_scene::Project = serde_json::from_str(&json).expect("openscut wire json");
+        let plan = super::lower_audio(&project);
+        assert_eq!(plan.sfx.len(), 2);
+        let build = || {
+            let mut media = media_codec::MediaLibrary::new();
+            media_audio::build_audio(&plan, &mut media, media_codec::DecodeLimits::unbounded()).expect("bed")
+        };
+        let a = build();
+        let b = build();
+        assert_eq!(a, b, "the same plan must render the same bed");
+        let sr = plan.sample_rate as usize;
+        for (at, name) in [(10usize, "whoosh"), (60, "impact")] {
+            let start = at * sr / 30;
+            let end = (start + sr / 4).min(a.len() / 2);
+            let peak = a[start * 2..end * 2].iter().fold(0i16, |m, s| m.max(s.abs()));
+            assert!(peak > 200, "{name} region silent: peak {peak}");
+        }
+        let bad = serde_json::json!({
+            "width": 64, "height": 64, "fps": 30, "durationFrames": 10,
+            "scenes": [], "audio": { "sfx": [{ "at": 0, "kind": "airhorn" }] }
+        })
+        .to_string();
+        let project = serde_json::from_str::<media_scene::Project>(&bad).expect("wire json parses");
+        let plan = super::lower_audio(&project);
+        let mut media = media_codec::MediaLibrary::new();
+        let error = media_audio::build_audio(&plan, &mut media, media_codec::DecodeLimits::unbounded())
+            .expect_err("unknown kind must fail explicitly");
+        assert_eq!(error.code(), "invalid_input");
+    }
+
     /// Writes a PNG with our own encoder, imports it back through WIC and
     /// checks that the pixels survive the round trip.
     #[test]
@@ -916,8 +976,9 @@ mod tests {
         // 1b. Decode the clip back and check the pixels, so a silent import
         // failure cannot pass as a green test.
         let mut library = media_codec::MediaLibrary::new();
-        let frame =
-            library.video_frame(source.to_str().unwrap(), 0.1, media_codec::DecodeLimits::unbounded()).expect("decode video frame");
+        let frame = library
+            .video_frame(source.to_str().unwrap(), 0.1, media_codec::DecodeLimits::unbounded())
+            .expect("decode video frame");
         assert_eq!((frame.width, frame.height), (160, 120));
         assert!(frame.rgba[0] > 120 && frame.rgba[1] < 100, "expected the red source, got {:?}", &frame.rgba[0..4]);
 

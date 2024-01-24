@@ -1,6 +1,6 @@
 # media
 
-媒体库门面。只做再导出，按域提供可选 feature：`image` / `raster` / `canvas` / `pixel` / `text` / `scene` / `audio` / `post` / `codec` / `render`，`default` 含全部。`media.types` 是无条件的基础合同；纯音频消费者可以 `default-features = false, features = ["audio"]`，不会拉入视觉与宿主栈。
+媒体库门面。只做再导出，按域提供可选 feature：`image` / `raster` / `canvas` / `pixel` / `text` / `scene` / `dsp` / `synthesis` / `audio` / `post` / `codec` / `render` / `sfx-export`，`default` 含全部。`media.types` 是无条件的基础合同；纯音频消费者可以 `default-features = false, features = ["synthesis"]` 或 `["audio"]`，不会拉入视觉与宿主栈。
 
 ```rust
 use media::{render_project, scene::Project};
@@ -15,7 +15,9 @@ use media::{render_project, scene::Project};
 | `media.pixel` | 调色板、索引画布与像素操作 |
 | `media.text` | 文字排版与字形 |
 | `media.codec` | 宿主解码 / 编码与 PNG / WAV 写出 |
-| `media.audio` | 音轨计划、合成与混音 |
+| `media.dsp` | 确定性 DSP 基元：随机流、双二阶、包络、滑移、声像 |
+| `media.synthesis` | 八族参数化音效、`SfxSpec` 合同与命名预设目录 |
+| `media.audio` | 音轨计划与混音（音效由 `media.synthesis` 渲染） |
 | `media.render` | 逐帧编排 |
 
 下游产品（如 OpenCut）只依赖 `media` 与 `geometry`，自己保留 FFI / 宿主外壳。
