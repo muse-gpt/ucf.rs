@@ -38,6 +38,9 @@ pub mod input;
 pub mod norm;
 
 pub use doc::{Shape, VectorDoc, VectorLayer};
+// The value types that appear in the public surface, re-exported so encoders
+// and hosts can name a paint without importing `geometry` themselves.
+pub use geometry::{Rgba, Vec2};
 pub use input::{DEFAULT_BACKGROUND, DEFAULT_LAYER_NAME, DEFAULT_STROKE_WIDTH, LayerSpec, ShapeSpec, VectorSpec};
 pub use norm::{
     MIN_LAYER_OPACITY, NormDoc, NormGeometry, NormLayer, NormShape, ROUNDED_CORNER_SEGMENTS, SMOOTH_SEGMENTS, normalize,
