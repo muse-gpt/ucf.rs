@@ -25,7 +25,7 @@ pub use media_pixel as pixel;
 pub use media_post as post;
 #[cfg(feature = "raster")]
 pub use media_raster as raster;
-#[cfg(any(feature = "render", feature = "image-pipeline", feature = "sfx-export"))]
+#[cfg(any(feature = "render", feature = "image-pipeline", feature = "sfx-export", feature = "vector-export"))]
 pub use media_render as render;
 #[cfg(feature = "scene")]
 pub use media_scene as scene;
@@ -42,4 +42,6 @@ pub use media_render::{ImageOperation, ProcessedImage, process_image};
 pub use media_render::{RenderStats, render_project};
 #[cfg(feature = "sfx-export")]
 pub use media_render::{write_sfx, write_sfx_catalogue};
+#[cfg(feature = "vector-export")]
+pub use media_render::{ExportedVector, VectorFormat, render_frame, write_vector};
 pub use media_types::Error;

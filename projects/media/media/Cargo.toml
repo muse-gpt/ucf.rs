@@ -26,7 +26,7 @@ media-render = { workspace = true, optional = true }
 media-post = { workspace = true, optional = true }
 
 [features]
-default = ["image", "scene", "raster", "canvas", "pixel", "particles", "text", "codec", "dsp", "synthesis", "audio", "post", "render", "sfx-export", "image-pipeline"]
+default = ["image", "scene", "raster", "canvas", "pixel", "particles", "text", "codec", "dsp", "synthesis", "audio", "post", "render", "sfx-export", "image-pipeline", "vector", "svg", "vector-export"]
 image = ["dep:media-image"]
 scene = ["dep:media-scene", "image"]
 raster = ["dep:media-raster", "image"]
@@ -43,3 +43,5 @@ post = ["dep:media-post"]
 render = ["dep:media-render", "media-render/scene", "scene", "raster", "text", "codec", "audio"]
 sfx-export = ["dep:media-render", "media-render/sfx-export", "synthesis", "codec"]
 image-pipeline = ["dep:media-render", "media-render/image-pipeline", "post", "codec", "image"]
+svg = ["codec", "vector", "media-codec/svg"]
+vector-export = ["dep:media-render", "media-render/vector-export", "vector", "raster", "codec", "svg"]

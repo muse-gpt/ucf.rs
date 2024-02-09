@@ -9,6 +9,9 @@
 //! - `image-pipeline`: [`process_image`] decodes an image, runs one domain
 //!   operation (develop recipe or effect stack) and encodes a PNG — no scene,
 //!   no text, no audio in the dependency graph.
+//! - `vector-export`: [`write_vector`] normalizes a `media.vector` document
+//!   and encodes either a PNG (raster paint through `media.raster`) or the
+//!   SVG artifact (through `media.codec`) — no scene, no text, no audio.
 
 #[cfg(feature = "scene")]
 pub mod render;
@@ -27,3 +30,9 @@ pub mod image_pipeline;
 
 #[cfg(feature = "image-pipeline")]
 pub use image_pipeline::{ImageOperation, ProcessedImage, process_image};
+
+#[cfg(feature = "vector-export")]
+pub mod vector_export;
+
+#[cfg(feature = "vector-export")]
+pub use vector_export::{ExportedVector, VectorFormat, render_frame, write_normalized, write_vector};
