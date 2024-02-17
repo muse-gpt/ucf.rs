@@ -1,0 +1,17 @@
+[package]
+name = "media-voxel"
+description = "Sparse voxel grids: exposed-face meshing, the shading strategy and the deterministic isometric preview plan shared with the OBJ encoder"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+media-types = { workspace = true }
+geometry = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

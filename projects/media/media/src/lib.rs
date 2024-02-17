@@ -35,6 +35,8 @@ pub use media_synthesis as synthesis;
 pub use media_text as text;
 #[cfg(feature = "vector")]
 pub use media_vector as vector;
+#[cfg(feature = "voxel")]
+pub use media_voxel as voxel;
 
 #[cfg(feature = "image-pipeline")]
 pub use media_render::{ImageOperation, ProcessedImage, process_image};
