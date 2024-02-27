@@ -22,6 +22,7 @@ media-audio = { workspace = true, optional = true }
 media-synthesis = { workspace = true, optional = true }
 media-post = { workspace = true, optional = true }
 media-vector = { workspace = true, optional = true }
+media-voxel = { workspace = true, optional = true }
 
 [features]
 default = ["scene"]
@@ -29,3 +30,4 @@ scene = ["dep:geometry", "dep:serde_json", "dep:media-scene", "dep:media-raster"
 image-pipeline = ["dep:media-post"]
 sfx-export = ["dep:media-synthesis"]
 vector-export = ["dep:geometry", "dep:media-vector", "dep:media-raster", "media-codec/svg"]
+voxel-export = ["dep:media-voxel", "dep:media-raster", "media-codec/obj"]

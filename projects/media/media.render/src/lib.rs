@@ -12,6 +12,10 @@
 //! - `vector-export`: [`write_vector`] normalizes a `media.vector` document
 //!   and encodes either a PNG (raster paint through `media.raster`) or the
 //!   SVG artifact (through `media.codec`) — no scene, no text, no audio.
+//! - `voxel-export`: [`write_voxel`] resolves a `media.voxel` spec into the
+//!   deterministic face list and encodes either an isometric PNG (plan paint
+//!   through `media.raster`) or the OBJ artifact (through `media.codec`) —
+//!   no scene, no text, no audio.
 
 #[cfg(feature = "scene")]
 pub mod render;
@@ -36,3 +40,9 @@ pub mod vector_export;
 
 #[cfg(feature = "vector-export")]
 pub use vector_export::{ExportedVector, VectorFormat, render_frame, write_normalized, write_vector};
+
+#[cfg(feature = "voxel-export")]
+pub mod voxel_export;
+
+#[cfg(feature = "voxel-export")]
+pub use voxel_export::{ExportedVoxel, VoxelFormat, render_preview, write_voxel, write_voxel_shaded};
