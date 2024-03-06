@@ -123,7 +123,7 @@ media-vector = { path = "projects/media/media.vector" }
 media-pixel = { path = "projects/media/media.pixel" }
 media-voxel = { path = "projects/media/media.voxel" }
 media-particles = { path = "projects/media/media.particles" }
-media-text = { path = "projects/media/media.text" }
+media-text = { path = "projects/media/media.text", default-features = false }
 media-codec = { path = "projects/media/media.codec" }
 media-dsp = { path = "projects/media/media.dsp" }
 media-synthesis = { path = "projects/media/media.synthesis" }

@@ -1,19 +1,31 @@
 //! Font loading, glyph rasterization with caching, line layout, the code
 //! highlighter and number formatting. Text shaping lives here so the painter
 //! only ever blends cached bitmaps.
+//!
+//! Layering is a feature contract, not a package split:
+//! - core (always): `Fonts::from_bytes`, `Fonts::measure` and `Fonts::wrap`
+//!   — the measurement half every layout crate may consume without pulling in
+//!   raster, scene or pixel storage;
+//! - `paint`: `Fonts::draw_line` — blends glyph bitmaps through
+//!   `media.raster` onto `media.image` frames;
+//! - `blocks`: `Fonts::draw_block`, `Fonts::draw_staggered` and
+//!   `Fonts::draw_code_line` — the scene-IR-facing display helpers.
+//!
+//! This crate never probes a system path for fonts: bytes are always injected
+//! by the caller, so any build is reproducible from the assets it was given.
 
 use std::collections::HashMap;
 
 use fontdue::{Font, FontSettings};
 
+#[cfg(feature = "paint")]
 use geometry::Rgba;
+#[cfg(feature = "paint")]
 use media_image::Frame;
+#[cfg(feature = "paint")]
 use media_raster::Paint;
+#[cfg(feature = "blocks")]
 use media_scene::{Align, Tone};
-
-const REGULAR: &[&str] = &["C:\\Windows\\Fonts\\msyh.ttc", "C:\\Windows\\Fonts\\NotoSansCJK-Regular.ttc"];
-const BOLD: &[&str] = &["C:\\Windows\\Fonts\\msyhbd.ttc", "C:\\Windows\\Fonts\\NotoSansCJK-Bold.ttc"];
-const MONO: &[&str] = &["C:\\Windows\\Fonts\\consola.ttf", "C:\\Windows\\Fonts\\DejaVuSansMono.ttf"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum FontId {
@@ -33,6 +45,10 @@ pub struct Fonts {
 /// One rasterized glyph: advance, x offset, top offset, size, coverage.
 type CachedGlyph = (f32, f32, f32, f32, f32, Vec<u8>);
 
+/// One rasterized glyph. The ink fields are consumed by the `paint` layer;
+/// the cache keeps one shape for both halves so a core-only build stores the
+/// same entries a full build does.
+#[cfg_attr(not(feature = "paint"), allow(dead_code))]
 struct Glyph {
     advance: f32,
     xmin: f32,
@@ -43,21 +59,19 @@ struct Glyph {
 }
 
 impl Fonts {
-    /// Loads the first available file from each role.
-    pub fn load() -> Result<Self, media_types::Error> {
-        let pick = |paths: &[&str]| -> Result<Vec<u8>, media_types::Error> {
-            for p in paths {
-                if let Ok(bytes) = std::fs::read(p) {
-                    return Ok(bytes);
-                }
-            }
-            Err(media_types::Error::io(format!("no font found among: {}", paths.join(", "))))
-        };
+    /// Builds the three faces from explicit font bytes.
+    ///
+    /// Resource discovery is the caller's job — a host that wants the system
+    /// fonts reads the files itself and passes the bytes here. Undecodable
+    /// bytes are an `io`-coded error naming the role that failed.
+    pub fn from_bytes(regular: &[u8], bold: &[u8], mono: &[u8]) -> Result<Self, media_types::Error> {
         let settings = FontSettings { collection_index: 0, ..Default::default() };
-        let regular =
-            Font::from_bytes(pick(REGULAR)?, settings).map_err(|e| media_types::Error::io(format!("regular font: {e}")))?;
-        let bold = Font::from_bytes(pick(BOLD)?, settings).map_err(|e| media_types::Error::io(format!("bold font: {e}")))?;
-        let mono = Font::from_bytes(pick(MONO)?, settings).map_err(|e| media_types::Error::io(format!("mono font: {e}")))?;
+        let regular = Font::from_bytes(regular.to_vec(), settings)
+            .map_err(|e| media_types::Error::io(format!("regular font: {e}")))?;
+        let bold =
+            Font::from_bytes(bold.to_vec(), settings).map_err(|e| media_types::Error::io(format!("bold font: {e}")))?;
+        let mono =
+            Font::from_bytes(mono.to_vec(), settings).map_err(|e| media_types::Error::io(format!("mono font: {e}")))?;
         Ok(Self { regular, bold, mono, cache: HashMap::new() })
     }
 
@@ -164,6 +178,7 @@ impl Fonts {
     }
 
     /// Draws one line from `x` (left) at the given baseline y.
+    #[cfg(feature = "paint")]
     pub fn draw_line(&mut self, frame: &mut Frame, text: &str, x: f32, baseline: f32, size: f32, id: FontId, color: Rgba) {
         let mut pen = x;
         for ch in text.chars() {
@@ -196,6 +211,7 @@ impl Fonts {
 
     /// Draws one line character by character, each glyph rising into place on
     /// a stagger. `life` is frames since the item appeared.
+    #[cfg(feature = "blocks")]
     #[allow(clippy::too_many_arguments)]
     pub fn draw_staggered(
         &mut self,
@@ -237,6 +253,7 @@ impl Fonts {
     }
 
     /// Draws wrapped text anchored at `x`/`y` (top) with alignment; returns height.
+    #[cfg(feature = "blocks")]
     pub fn draw_block(
         &mut self,
         frame: &mut Frame,
@@ -267,6 +284,7 @@ impl Fonts {
     }
 
     /// Draws a code line with tone coloring. Returns width.
+    #[cfg(feature = "blocks")]
     pub fn draw_code_line(
         &mut self,
         frame: &mut Frame,
@@ -361,6 +379,7 @@ pub fn format_number(value: f64, decimals: u32) -> String {
 
 /// Splits a source line into highlighted tokens. Deliberately small: this is
 /// a display highlighter, not a parser.
+#[cfg(feature = "blocks")]
 fn highlight(line: &str) -> Vec<(String, Tone)> {
     let keywords = [
         "const", "let", "var", "new", "import", "from", "export", "await", "async", "return", "if", "else", "for", "in", "fn",

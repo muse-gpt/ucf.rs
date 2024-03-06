@@ -33,11 +33,32 @@ pub struct RenderStats {
     pub audio: bool,
 }
 
+/// System font discovery for the scene film pipeline.
+///
+/// This lives at the host-IO boundary on purpose: `media.text` only ever
+/// accepts explicit bytes through `Fonts::from_bytes`, so no domain crate
+/// binds its output to the fonts installed on one machine. The film path
+/// keeps the historical candidate list verbatim.
+fn load_system_fonts() -> Result<Fonts, Error> {
+    const REGULAR: &[&str] = &["C:\\Windows\\Fonts\\msyh.ttc", "C:\\Windows\\Fonts\\NotoSansCJK-Regular.ttc"];
+    const BOLD: &[&str] = &["C:\\Windows\\Fonts\\msyhbd.ttc", "C:\\Windows\\Fonts\\NotoSansCJK-Bold.ttc"];
+    const MONO: &[&str] = &["C:\\Windows\\Fonts\\consola.ttf", "C:\\Windows\\Fonts\\DejaVuSansMono.ttf"];
+    let pick = |paths: &[&str]| -> Result<Vec<u8>, Error> {
+        for p in paths {
+            if let Ok(bytes) = std::fs::read(p) {
+                return Ok(bytes);
+            }
+        }
+        Err(Error::io(format!("no font found among: {}", paths.join(", "))))
+    };
+    Fonts::from_bytes(&pick(REGULAR)?, &pick(BOLD)?, &pick(MONO)?)
+}
+
 /// Parses, validates and renders a project JSON string into `out`.
 pub fn render_project(json: &str, out: &Path, progress: &mut dyn FnMut(u32, u32)) -> Result<RenderStats, Error> {
     let project: Project = serde_json::from_str(json).map_err(|e| Error::invalid(format!("project json: {e}")))?;
     validate(&project)?;
-    let mut fonts = Fonts::load()?;
+    let mut fonts = load_system_fonts()?;
     let mut media = MediaLibrary::new();
     // The project layer's decode budget: this renderer trusts container sizes,
     // hosts with tighter budgets pass their own limits to the codec calls.
