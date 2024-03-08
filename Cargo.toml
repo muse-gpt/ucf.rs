@@ -28,6 +28,7 @@ members = [
     "projects/media/media.vector",
     "projects/media/media.pixel",
     "projects/media/media.voxel",
+    "projects/media/media.layout",
     "projects/media/media.particles",
     "projects/media/media.text",
     "projects/media/media.codec",
@@ -64,6 +65,7 @@ default-members = [
     "projects/media/media.vector",
     "projects/media/media.pixel",
     "projects/media/media.voxel",
+    "projects/media/media.layout",
     "projects/media/media.particles",
     "projects/media/media.text",
     "projects/media/media.codec",
@@ -122,6 +124,7 @@ media-canvas = { path = "projects/media/media.canvas" }
 media-vector = { path = "projects/media/media.vector" }
 media-pixel = { path = "projects/media/media.pixel" }
 media-voxel = { path = "projects/media/media.voxel" }
+media-layout = { path = "projects/media/media.layout" }
 media-particles = { path = "projects/media/media.particles" }
 media-text = { path = "projects/media/media.text", default-features = false }
 media-codec = { path = "projects/media/media.codec" }

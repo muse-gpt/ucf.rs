@@ -17,6 +17,8 @@ pub use media_codec as codec;
 pub use media_dsp as dsp;
 #[cfg(feature = "image")]
 pub use media_image as image;
+#[cfg(feature = "layout")]
+pub use media_layout as layout;
 #[cfg(feature = "particles")]
 pub use media_particles as particles;
 #[cfg(feature = "pixel")]

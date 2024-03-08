@@ -1,0 +1,19 @@
+[package]
+name = "media-layout"
+description = "Panel documents: page and annotation specs, grid math, text-box metrics, balloon paths and the numbered overview plan"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+media-types = { workspace = true }
+geometry = { workspace = true }
+media-image = { workspace = true }
+media-text = { workspace = true }
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
