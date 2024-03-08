@@ -16,6 +16,11 @@
 //!   deterministic face list and encodes either an isometric PNG (plan paint
 //!   through `media.raster`) or the OBJ artifact (through `media.codec`) —
 //!   no scene, no text, no audio.
+//! - `layout-export`: [`write_page`] and [`write_overview`] resolve a
+//!   `media.layout` comic spec, lower its page or contact-sheet plan through
+//!   `media.raster` and the `paint` layer of `media.text`, and encode a PNG
+//!   through `media.codec` — fonts and images are explicit resource inputs,
+//!   no scene and no audio in the dependency graph.
 
 #[cfg(feature = "scene")]
 pub mod render;
@@ -46,3 +51,9 @@ pub mod voxel_export;
 
 #[cfg(feature = "voxel-export")]
 pub use voxel_export::{ExportedVoxel, VoxelFormat, render_preview, write_voxel, write_voxel_shaded};
+
+#[cfg(feature = "layout-export")]
+pub mod layout_export;
+
+#[cfg(feature = "layout-export")]
+pub use layout_export::{ExportedPage, FontAssets, LayoutAssets, MediaImages, render_overview, render_page, write_overview, write_page};

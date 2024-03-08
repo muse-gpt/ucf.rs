@@ -32,7 +32,8 @@ pub use media_raster as raster;
     feature = "image-pipeline",
     feature = "sfx-export",
     feature = "vector-export",
-    feature = "voxel-export"
+    feature = "voxel-export",
+    feature = "layout-export"
 ))]
 pub use media_render as render;
 #[cfg(feature = "scene")]
@@ -50,6 +51,8 @@ pub use media_voxel as voxel;
 pub use media_render::{ExportedVector, VectorFormat, render_frame, write_vector};
 #[cfg(feature = "voxel-export")]
 pub use media_render::{ExportedVoxel, VoxelFormat, render_preview, write_voxel};
+#[cfg(feature = "layout-export")]
+pub use media_render::{ExportedPage, FontAssets, LayoutAssets, MediaImages, render_overview, render_page, write_overview, write_page};
 #[cfg(feature = "image-pipeline")]
 pub use media_render::{ImageOperation, ProcessedImage, process_image};
 #[cfg(feature = "render")]
