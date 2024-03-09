@@ -33,3 +33,6 @@ sfx-export = ["dep:media-synthesis"]
 vector-export = ["dep:geometry", "dep:media-vector", "dep:media-raster", "media-codec/svg"]
 voxel-export = ["dep:media-voxel", "dep:media-raster", "media-codec/obj"]
 layout-export = ["dep:media-layout", "dep:media-raster", "dep:media-text", "media-text/paint"]
+
+[dev-dependencies]
+serde_json = { workspace = true }
