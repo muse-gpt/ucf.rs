@@ -8,7 +8,9 @@
 //! 输入域、传递函数、alpha、边界采样、模糊半径与 tone mapping 时机的正式合同
 //! 成文于 [`contract`]，每个算子以 [`contract::InputDomain`] 显式标注自己消费
 //! 线性 HDR 还是显示 RGBA8；显示空间可分离盒模糊的唯一实现见 [`display_blur`]。
-//! 显示空间算子（[`display_ops`]，五个：blur/chroma/displace/sweep/grain）、
+//! 显示空间算子（[`display_ops`]，五个：blur/chroma/displace/sweep/grain）与
+//! 镜头级算子（[`shot_ops`]：soft bloom/vignette/film grain/pulse/stamp/LUT/
+//! 转场混合，吸收自帧合成器 CPU 参考通路）、
 //! 有序栈合同（[`effect`]）、中立 JSON 栈声明（[`stack_spec`]）与通用参数组合
 //! （[`presets`]）共同构成效果栈；栈的 `bloom` 绑定 [`post`] 的线性 HDR 物理
 //! 路径，其显式域转换由 [`stack_bloom`] 执行、合同成文于 [`contract`]。
@@ -26,6 +28,7 @@ mod generative;
 mod post;
 mod post_ucf;
 mod presets;
+mod shot_ops;
 mod stack_bloom;
 mod stack_spec;
 mod tone_map_batch;
@@ -47,6 +50,10 @@ pub use post::{
 };
 pub use post_ucf::{apply_tone_map_ucf, bloom_pass_ucf, extract_bright_pass_ucf};
 pub use presets::{Preset, PRESETS, preset, preset_names, volumetric};
+pub use shot_ops::{
+    EmberPulse, FilmGrain, GradeMap, SlamStamp, SoftBloom, Vignette, crossfade, flash, hash21,
+    iris_wipe, slices_wipe,
+};
 pub use stack_bloom::{Bloom, BLOOM_HDR_HEADROOM};
 pub use stack_spec::{EffectSpec, StackSpec};
 pub use tone_map_batch::tone_map_aces_batch;

@@ -66,6 +66,16 @@ pub fn apply(ease: Ease, t: f32) -> f32 {
     }
 }
 
+/// Hermite smoothstep between two edges (edges may be reversed).
+///
+/// Shared easing primitive for FX masks (stamp slam, vignette falloff,
+/// iris/slice wipe edges). Deterministic in f32: same inputs, same bits.
+#[must_use]
+pub fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Alpha envelope for an element living `dur` frames with fades at both ends.
 #[must_use]
 pub fn fade(local: u32, dur: u32, fade_in: u32, fade_out: u32) -> f32 {

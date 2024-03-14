@@ -4,4 +4,4 @@ pub mod curve;
 pub mod ease;
 
 pub use curve::{CameraKey, CameraPose, camera_at};
-pub use ease::{Ease, apply, fade};
+pub use ease::{Ease, apply, fade, smoothstep};
