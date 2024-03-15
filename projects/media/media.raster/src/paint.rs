@@ -71,8 +71,6 @@ pub trait Paint {
     /// Deterministic star field: hash-based positions, sine twinkle, slow drift.
     fn starfield(&mut self, count: u32, tint: Rgba, drift_px_per_sec: f32, twinkle: f32, seconds: f32);
 
-    /// Darkens the frame edges; `vignette` holds one alpha byte per pixel.
-    fn apply_vignette(&mut self, factor: &[u8]);
 }
 
 #[inline]
@@ -580,22 +578,6 @@ impl Paint for Frame {
         }
     }
 
-    fn apply_vignette(&mut self, factor: &[u8]) {
-        let mut i = 0;
-        for y in 0..self.height {
-            for x in 0..self.width {
-                let v = factor[i] as u32;
-                if v != 0 {
-                    let p = i * 4;
-                    self.pixels[p] = (self.pixels[p] as u32 * (255 - v) / 255) as u8;
-                    self.pixels[p + 1] = (self.pixels[p + 1] as u32 * (255 - v) / 255) as u8;
-                    self.pixels[p + 2] = (self.pixels[p + 2] as u32 * (255 - v) / 255) as u8;
-                    let _ = (x, y);
-                }
-                i += 1;
-            }
-        }
-    }
 }
 
 /// Euclidean distance between two points.
@@ -646,23 +628,4 @@ pub fn smooth_polyline(points: &[[f32; 2]], closed: bool, segments: u32) -> Vec<
     out
 }
 
-/// Builds the vignette factor map once per resolution.
-#[must_use]
-pub fn build_vignette(width: u32, height: u32, strength: f32) -> Vec<u8> {
-    let cx = width as f32 / 2.0;
-    let cy = height as f32 / 2.0;
-    let max_r = (cx * cx + cy * cy).sqrt();
-    let mut map = vec![0u8; (width as usize) * (height as usize)];
-    let mut i = 0;
-    for y in 0..height {
-        for x in 0..width {
-            let dx = x as f32 - cx;
-            let dy = y as f32 - cy;
-            let t = (dx * dx + dy * dy).sqrt() / max_r;
-            let v = (t - 0.45).max(0.0) / 0.55 * strength;
-            map[i] = (v.clamp(0.0, 1.0) * 180.0) as u8;
-            i += 1;
-        }
-    }
-    map
-}
+

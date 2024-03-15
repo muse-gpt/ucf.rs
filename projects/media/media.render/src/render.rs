@@ -12,7 +12,8 @@ use media_codec::DecodeLimits;
 use media_codec::Encoder;
 use media_codec::MediaLibrary;
 use media_image::Frame;
-use media_raster::{Paint, build_vignette};
+use media_post::Vignette;
+use media_raster::Paint;
 use media_scene::{Align, Background, Blend, Item, Project, ShapeKind};
 use media_text::Fonts;
 use media_types::Error;
@@ -64,7 +65,8 @@ pub fn render_project(json: &str, out: &Path, progress: &mut dyn FnMut(u32, u32)
     // hosts with tighter budgets pass their own limits to the codec calls.
     let limits = DecodeLimits::unbounded();
     let (w, h, fps) = (project.width, project.height, project.fps);
-    let vignette = build_vignette(w, h, 0.55);
+    // 暗角唯一正式语义：`media.post::Vignette`（G7 裁决，旧 raster 掩码已删）。
+    let vignette = Vignette::new(0.55);
     let seconds = project.time_base().to_seconds(project.duration_frames);
     let has_audio = project.audio.is_some();
     let plan = lower_audio(&project);
@@ -195,7 +197,7 @@ fn paint_frame(
     project: &Project,
     fonts: &mut Fonts,
     media: &mut MediaLibrary,
-    vignette: &[u8],
+    vignette: &Vignette,
     scratch: &mut Frame,
     frame_index: u32,
     out: &mut Frame,
@@ -243,7 +245,7 @@ fn paint_frame(
             out.resample_from(scratch, zoom, focus, camera.rotate_to * eased);
         }
     }
-    out.apply_vignette(vignette);
+    vignette.apply(out);
 }
 
 fn paint_background(frame: &mut Frame, bg: &Background, seconds: f32) {
@@ -1001,7 +1003,14 @@ mod tests {
             .video_frame(source.to_str().unwrap(), 0.1, media_codec::DecodeLimits::unbounded())
             .expect("decode video frame");
         assert_eq!((frame.width, frame.height), (160, 120));
-        assert!(frame.rgba[0] > 120 && frame.rgba[1] < 100, "expected the red source, got {:?}", &frame.rgba[0..4]);
+        // 取中心像素：暗角（post::Vignette）只压边缘角，中心保留源色，
+        // 断言验证的是视频回环而不是暗角强度。
+        let center = (80 * 160 + 60) * 4;
+        assert!(
+            frame.rgba[center] > 120 && frame.rgba[center + 1] < 100,
+            "expected the red source, got {:?}",
+            &frame.rgba[center..center + 4]
+        );
 
         // 2. Write a short PCM16 WAV with our own writer.
         let wav = dir.join("tone.wav");

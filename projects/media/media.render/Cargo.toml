@@ -27,7 +27,7 @@ media-layout = { workspace = true, optional = true }
 
 [features]
 default = ["scene"]
-scene = ["dep:geometry", "dep:serde_json", "dep:media-scene", "dep:media-raster", "dep:media-text", "media-text/blocks", "dep:media-audio"]
+scene = ["dep:geometry", "dep:serde_json", "dep:media-scene", "dep:media-raster", "dep:media-text", "media-text/blocks", "dep:media-audio", "dep:media-post"]
 image-pipeline = ["dep:media-post"]
 sfx-export = ["dep:media-synthesis"]
 vector-export = ["dep:geometry", "dep:media-vector", "dep:media-raster", "media-codec/svg"]
