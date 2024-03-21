@@ -68,6 +68,9 @@ pub struct ClipPlacement {
     pub fade_in_frames: u32,
     /// Linear fade-out over the last N placed frames (0 means no fade).
     pub fade_out_frames: u32,
+    /// Project-declared contract slot: a missing or undecodable source is an
+    /// explicit error. Reserved scene beds keep `false` (documented silence).
+    pub required: bool,
 }
 
 /// The reserved narration slot: a PCM16 WAV mixed in at a frame offset.
@@ -142,10 +145,20 @@ pub fn build_audio(plan: &AudioPlan, media: &mut MediaLibrary, limits: DecodeLim
         mix_wav(&mut buf, &narration.wav, narration.delay_frames, narration.volume, plan)?;
     }
     for clip in &plan.clips {
-        // A missing or undecodable import must not abort the render: the
-        // clip stays silent and the rest of the film still compiles.
-        let Ok(samples) = media.audio_pcm(&clip.src, plan.sample_rate, limits) else {
-            continue;
+        let samples = match media.audio_pcm(&clip.src, plan.sample_rate, limits) {
+            Ok(samples) => samples,
+            Err(error) => {
+                // Optional (reserved) imports must not abort the render: the
+                // clip stays silent and the rest of the film still compiles.
+                // A required slot is a declared contract — fail explicitly.
+                if clip.required {
+                    return Err(Error::invalid_input(format!(
+                        "required audio clip `{}` cannot be decoded: {error}",
+                        clip.src
+                    )));
+                }
+                continue;
+            }
         };
         let start = plan.time_base.to_samples(clip.at_frames, plan.sample_rate);
         let offset = plan.time_base.to_samples(clip.offset_frames, plan.sample_rate);
@@ -318,6 +331,49 @@ mod tests {
         let region_a = &a[start_a * 2..(start_a + len) * 2];
         let region_b = &b[start_b * 2..(start_b + len) * 2];
         assert_eq!(region_a, region_b, "placement position must not change the sound");
+    }
+
+    fn clip(src: &str, required: bool) -> ClipPlacement {
+        ClipPlacement {
+            src: src.into(),
+            at_frames: 0,
+            duration_frames: None,
+            offset_frames: 0,
+            volume: 1.0,
+            fade_in_frames: 0,
+            fade_out_frames: 0,
+            required,
+        }
+    }
+
+    #[test]
+    fn required_clip_missing_file_fails_optional_stays_silent() {
+        let absent = std::env::temp_dir().join("media-audio-absent-clip.wav");
+        let path = absent.to_string_lossy().to_string();
+        let mut media = MediaLibrary::new();
+        let error = build_audio(
+            &{
+                let mut p = plan(Vec::new());
+                p.clips = vec![clip(&path, true)];
+                p
+            },
+            &mut media,
+            DecodeLimits::unbounded(),
+        )
+        .expect_err("a declared contract slot must fail explicitly");
+        assert_eq!(error.code(), "invalid_input");
+        assert!(error.message.contains("required audio clip"), "{error}");
+        let bed = build_audio(
+            &{
+                let mut p = plan(Vec::new());
+                p.clips = vec![clip(&path, false)];
+                p
+            },
+            &mut media,
+            DecodeLimits::unbounded(),
+        )
+        .expect("reserved slot stays silent");
+        assert!(bed.iter().all(|s| *s == 0), "optional missing clip must be silence");
     }
 
     #[test]

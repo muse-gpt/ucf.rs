@@ -147,6 +147,8 @@ pub fn lower_audio(project: &Project) -> AudioPlan {
                         volume: c.volume,
                         fade_in_frames: 0,
                         fade_out_frames: 0,
+                        // Scene beds are reserved slots: documented silence.
+                        required: false,
                     })
                     .collect()
             })
