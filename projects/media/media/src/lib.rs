@@ -25,6 +25,8 @@ pub use media_particles as particles;
 pub use media_pixel as pixel;
 #[cfg(feature = "post")]
 pub use media_post as post;
+#[cfg(feature = "voice")]
+pub use media_voice as voice;
 #[cfg(feature = "raster")]
 pub use media_raster as raster;
 #[cfg(any(

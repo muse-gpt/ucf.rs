@@ -6,6 +6,8 @@
 //!   audio bed and pushes both through the encoder.
 //! - `sfx-export`: [`write_sfx`] renders one `media.synthesis` spec and
 //!   encodes it through `media.codec` — no scene, no visual stack.
+//! - `voice-export`: [`write_voice`] renders one `media.voice` song and
+//!   encodes it through `media.codec` — no scene, no visual stack.
 //! - `image-pipeline`: [`process_image`] decodes an image, runs one domain
 //!   operation (develop recipe or effect stack) and encodes a PNG — no scene,
 //!   no text, no audio in the dependency graph.
@@ -33,6 +35,12 @@ pub mod sfx;
 
 #[cfg(feature = "sfx-export")]
 pub use sfx::{write_sfx, write_sfx_catalogue};
+
+#[cfg(feature = "voice-export")]
+pub mod voice;
+
+#[cfg(feature = "voice-export")]
+pub use voice::write_voice;
 
 #[cfg(feature = "image-pipeline")]
 pub mod image_pipeline;

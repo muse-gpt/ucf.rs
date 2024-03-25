@@ -34,6 +34,7 @@ members = [
     "projects/media/media.codec",
     "projects/media/media.dsp",
     "projects/media/media.synthesis",
+    "projects/media/media.voice",
     "projects/media/media.audio",
     "projects/media/media.render",
     "projects/media/media.post",
@@ -71,6 +72,7 @@ default-members = [
     "projects/media/media.codec",
     "projects/media/media.dsp",
     "projects/media/media.synthesis",
+    "projects/media/media.voice",
     "projects/media/media.audio",
     "projects/media/media.render",
     "projects/media/media.post",
@@ -130,6 +132,7 @@ media-text = { path = "projects/media/media.text", default-features = false }
 media-codec = { path = "projects/media/media.codec" }
 media-dsp = { path = "projects/media/media.dsp" }
 media-synthesis = { path = "projects/media/media.synthesis" }
+media-voice = { path = "projects/media/media.voice" }
 media-audio = { path = "projects/media/media.audio" }
 media-render = { path = "projects/media/media.render", default-features = false }
 media-post = { path = "projects/media/media.post" }

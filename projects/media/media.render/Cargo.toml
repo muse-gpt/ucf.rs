@@ -20,6 +20,7 @@ media-raster = { workspace = true, optional = true }
 media-text = { workspace = true, optional = true }
 media-audio = { workspace = true, optional = true }
 media-synthesis = { workspace = true, optional = true }
+media-voice = { workspace = true, optional = true }
 media-post = { workspace = true, optional = true }
 media-vector = { workspace = true, optional = true }
 media-voxel = { workspace = true, optional = true }
@@ -30,6 +31,7 @@ default = ["scene"]
 scene = ["dep:geometry", "dep:serde_json", "dep:media-scene", "dep:media-raster", "dep:media-text", "media-text/blocks", "dep:media-audio", "dep:media-post"]
 image-pipeline = ["dep:media-post"]
 sfx-export = ["dep:media-synthesis"]
+voice-export = ["dep:media-voice"]
 vector-export = ["dep:geometry", "dep:media-vector", "dep:media-raster", "media-codec/svg"]
 voxel-export = ["dep:media-voxel", "dep:media-raster", "media-codec/obj"]
 layout-export = ["dep:media-layout", "dep:media-raster", "dep:media-text", "media-text/paint"]

@@ -1,6 +1,6 @@
 [package]
 name = "media"
-description = "Media facade: per-domain optional re-exports over image, raster, pixel, particles, canvas, scene, text, codec, dsp, synthesis, audio, post and render"
+description = "Media facade: per-domain optional re-exports over image, raster, pixel, particles, canvas, scene, text, codec, dsp, synthesis, voice, audio, post and render"
 readme = "readme.md"
 version.workspace = true
 edition.workspace = true
@@ -23,12 +23,13 @@ media-text = { workspace = true, optional = true }
 media-codec = { workspace = true, optional = true }
 media-dsp = { workspace = true, optional = true }
 media-synthesis = { workspace = true, optional = true }
+media-voice = { workspace = true, optional = true }
 media-audio = { workspace = true, optional = true }
 media-render = { workspace = true, optional = true }
 media-post = { workspace = true, optional = true }
 
 [features]
-default = ["image", "scene", "raster", "canvas", "pixel", "voxel", "layout", "particles", "text", "codec", "dsp", "synthesis", "audio", "post", "render", "sfx-export", "image-pipeline", "vector", "svg", "vector-export", "obj", "voxel-export", "layout-export"]
+default = ["image", "scene", "raster", "canvas", "pixel", "voxel", "layout", "particles", "text", "codec", "dsp", "synthesis", "voice", "audio", "post", "render", "sfx-export", "voice-export", "image-pipeline", "vector", "svg", "vector-export", "obj", "voxel-export", "layout-export"]
 image = ["dep:media-image"]
 scene = ["dep:media-scene", "image"]
 raster = ["dep:media-raster", "image"]
@@ -42,10 +43,12 @@ text = ["dep:media-text", "media-text/blocks", "raster", "scene"]
 codec = ["dep:media-codec", "image"]
 dsp = ["dep:media-dsp"]
 synthesis = ["dep:media-synthesis", "dsp"]
+voice = ["dep:media-voice", "dsp"]
 audio = ["dep:media-audio", "codec", "synthesis"]
 post = ["dep:media-post"]
 render = ["dep:media-render", "media-render/scene", "scene", "raster", "text", "codec", "audio"]
 sfx-export = ["dep:media-render", "media-render/sfx-export", "synthesis", "codec"]
+voice-export = ["dep:media-render", "media-render/voice-export", "voice", "codec"]
 image-pipeline = ["dep:media-render", "media-render/image-pipeline", "post", "codec", "image"]
 svg = ["codec", "vector", "media-codec/svg"]
 obj = ["codec", "voxel", "media-codec/obj"]
