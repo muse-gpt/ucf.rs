@@ -28,6 +28,10 @@ pub enum Vowel {
 }
 
 impl Vowel {
+    /// Every contracted vowel, in canonical order (bindings list capabilities
+    /// from this one source — never a hand-copied string array).
+    pub const ALL: [Self; 5] = [Self::A, Self::E, Self::I, Self::O, Self::U];
+
     /// kebab-case spelling, authoritative for spec parsing.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -91,6 +95,9 @@ pub enum Onset {
 }
 
 impl Onset {
+    /// Every contracted onset class, in canonical order.
+    pub const ALL: [Self; 7] = [Self::S, Self::T, Self::N, Self::R, Self::W, Self::Y, Self::F];
+
     /// kebab-case spelling, authoritative for spec parsing.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
