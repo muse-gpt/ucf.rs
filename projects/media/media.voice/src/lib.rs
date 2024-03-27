@@ -22,7 +22,9 @@
 //! `media.codec` behind its `voice-export` feature.
 
 pub mod formant;
+pub mod lf;
 pub mod spec;
+pub mod tract;
 
 pub use formant::render;
 pub use spec::{Onset, Syllable, Vibrato, Vowel, VoiceSpec};

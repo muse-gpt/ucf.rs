@@ -1,34 +1,27 @@
-//! Formant singing synthesis: a glottal source shaped by vowel formants and
-//! syllable-onset events.
+//! GOLF 风格人声合成引擎：LF 声门流波表 + 级联全极点声道 + 谐波/噪声模型。
 //!
-//! Signal chain per syllable: phase-continuous pulse train (pitch + vibrato +
-//! breath noise) → three 2-pole resonators tuned to the vowel formants →
-//! onset event (fricative noise, plosive gap+click, nasal hum, or formant
-//! glide) → attack/release envelope. Deterministic: no wall-clock, one
-//! `media.dsp::Rng` stream for breath, seed from the spec.
+//! 相对旧版「锯齿波 + 并联带通」的本质改进（GOLF, Yu & Fazekas 2024）：
+//! - 激励源：LF 模型单参数 `R_d` 波表（真实声门脉冲频谱倾斜与闭合峰）；
+//! - 声道：共振峰极点 → 级联 2 极点全极点 IIR（共振峰相互作用真实存在）；
+//! - 气声：谐波 + 噪声模型，噪声经同一声道滤波（GOLF §3.1）。
 //!
-//! This is categorical synthesis — the honest minimal voice. Speaker timbre,
-//! phoneme timing models and neural vocoders are separate later contracts and
-//! are deliberately not approximated here with hidden parameters.
+//! 全部确定性：同 spec+seed 字节级复现。
 
+use crate::lf::GlottalTables;
 use crate::spec::{Onset, VoiceSpec};
+use crate::tract::AllPole;
 use media_dsp::Rng;
 use media_types::Error;
 
-/// Renders the spec to interleaved stereo f32 (both channels identical; the
-/// voice is a mono instrument, the pair is the house mixer contract).
-///
-/// # Errors
-/// Returns the spec's `invalid_input` validation error.
+/// 渲染为立体声 f32（双声道同相；与 `media.synthesis` 合同一致）。
 pub fn render(spec: &VoiceSpec, sample_rate: f32) -> Result<Vec<[f32; 2]>, Error> {
     spec.validate()?;
     let total_seconds = spec.duration_seconds();
     let total = (total_seconds * sample_rate).ceil() as usize;
     let mut mono = vec![0.0_f32; total.max(1)];
 
-    // One breath stream per song, consumed in sample order — same spec and
-    // seed reproduce byte-identically.
     let mut breath = Rng::new(spec.seed);
+    let tables = GlottalTables::new();
     let mut phase = 0.0_f32;
     let beat_seconds = 60.0 / spec.tempo_bpm;
     let mut cursor = 0_usize;
@@ -36,12 +29,10 @@ pub fn render(spec: &VoiceSpec, sample_rate: f32) -> Result<Vec<[f32; 2]>, Error
     for syllable in &spec.syllables {
         let length = (syllable.beats * beat_seconds * sample_rate).round() as usize;
         let length = length.max(1).min(mono.len().saturating_sub(cursor).max(1));
-        render_syllable(spec, syllable, &mut mono[cursor..cursor + length], sample_rate, &mut breath, &mut phase);
+        render_syllable(spec, syllable, &mut mono[cursor..cursor + length], sample_rate, &mut breath, &tables, &mut phase);
         cursor += length;
     }
 
-    // Normalise into the requested volume; a song with real pitch content
-    // peaks well below 1.0 from the resonator gains alone.
     let peak = mono.iter().fold(0.0_f32, |a, s| a.max(s.abs())).max(1e-6);
     let gain = spec.volume / peak;
     Ok(mono
@@ -53,40 +44,42 @@ pub fn render(spec: &VoiceSpec, sample_rate: f32) -> Result<Vec<[f32; 2]>, Error
         .collect())
 }
 
-/// One 2-pole resonator: bandpass at `frequency` with bandwidth `bandwidth`.
-#[derive(Clone, Copy)]
-struct Resonator {
-    coefficient_a: f32,
-    coefficient_b: f32,
-    y1: f32,
-    y2: f32,
+/// 音节级 Rd：辅音类决定发声力度（高 R_d = 压喉短开相）。
+/// T 爆音起音压得最紧；S/F 擦音段本身是噪声、其后元音偏松。
+fn rd_for(onset: Option<Onset>) -> f32 {
+    match onset {
+        Some(Onset::T) => 2.4,
+        Some(Onset::S | Onset::F) => 0.6,
+        Some(Onset::N) => 1.2,
+        Some(Onset::R | Onset::W | Onset::Y) => 1.5,
+        None => 1.5,
+    }
 }
 
-impl Resonator {
-    fn new(frequency: f32, bandwidth: f32, sample_rate: f32) -> Self {
-        let r = (-std::f32::consts::PI * bandwidth / sample_rate).exp();
-        let theta = 2.0 * std::f32::consts::PI * frequency / sample_rate;
-        Self {
-            coefficient_a: 2.0 * r * theta.cos(),
-            coefficient_b: -r * r,
-            y1: 0.0,
-            y2: 0.0,
-        }
-    }
+/// 起音事件：擦音/爆音/鼻音/滑音的声道前导处理。
+enum OnsetKind {
+    /// 擦音：高频噪声（S 5500 Hz / F 2200 Hz）经声道滤波。
+    Fricative { center: f32, bandwidth: f32 },
+    /// 爆音：静音 + 宽带 click。
+    Plosive,
+    /// 鼻音：低通声道（250/1000 Hz 双共振峰）。
+    Nasal,
+    /// 滑音：共振峰从起始滑入目标。
+    Glide { from: [f32; 3] },
+    /// 无起音。
+    None,
+}
 
-    /// Retunes in place (formant glides), keeping the filter state.
-    fn retune(&mut self, frequency: f32, bandwidth: f32, sample_rate: f32) {
-        let r = (-std::f32::consts::PI * bandwidth / sample_rate).exp();
-        let theta = 2.0 * std::f32::consts::PI * frequency / sample_rate;
-        self.coefficient_a = 2.0 * r * theta.cos();
-        self.coefficient_b = -r * r;
-    }
-
-    fn process(&mut self, input: f32) -> f32 {
-        let y = input + self.coefficient_a * self.y1 + self.coefficient_b * self.y2;
-        self.y2 = self.y1;
-        self.y1 = y;
-        y
+fn onset_kind(onset: Option<Onset>, target: [f32; 3]) -> OnsetKind {
+    match onset {
+        Some(Onset::S) => OnsetKind::Fricative { center: 5500.0, bandwidth: 1500.0 },
+        Some(Onset::F) => OnsetKind::Fricative { center: 2200.0, bandwidth: 1500.0 },
+        Some(Onset::T) => OnsetKind::Plosive,
+        Some(Onset::N) => OnsetKind::Nasal,
+        Some(Onset::R) => OnsetKind::Glide { from: [350.0, 1100.0, 2400.0] },
+        Some(Onset::W) => OnsetKind::Glide { from: [325.0, 850.0, 2350.0] },
+        Some(Onset::Y) => OnsetKind::Glide { from: [300.0, 2300.0, 3000.0] },
+        None => OnsetKind::None,
     }
 }
 
@@ -95,97 +88,89 @@ fn render_syllable(
     syllable: &crate::spec::Syllable,
     out: &mut [f32],
     sample_rate: f32,
-    breath: &mut Rng,
+    breath_rng: &mut Rng,
+    tables: &GlottalTables,
     phase: &mut f32,
 ) {
     let length = out.len();
     let seconds = length as f32 / sample_rate;
     let formants = syllable.vowel.formants();
-    let mut f1 = Resonator::new(formants[0], 80.0, sample_rate);
-    let mut f2 = Resonator::new(formants[1], 90.0, sample_rate);
-    let mut f3 = Resonator::new(formants[2], 120.0, sample_rate);
+    let rd = rd_for(syllable.onset);
+    let onset = onset_kind(syllable.onset, formants);
 
-    // Onset events reshape the first part of the syllable.
-    let onset_fraction = match syllable.onset {
-        Some(Onset::R | Onset::W | Onset::Y) => 0.3,
-        _ => 0.0,
-    };
-    let (glide_from, glide_to) = match syllable.onset {
-        Some(Onset::R) => ([350.0, 1100.0, 2400.0], formants),
-        Some(Onset::W) => ([325.0, 850.0, 2350.0], formants),
-        Some(Onset::Y) => ([300.0, 2300.0, 3000.0], formants),
-        _ => (formants, formants),
-    };
-    // Fricative / plosive / nasal pre-roll occupies the syllable head.
-    let onset_lead = match syllable.onset {
-        Some(Onset::S | Onset::F) => (0.045 * sample_rate).round() as usize,
-        Some(Onset::T) => (0.030 * sample_rate).round() as usize,
-        Some(Onset::N) => (0.040 * sample_rate).round() as usize,
+    // 起音前导长度。
+    let onset_lead = match onset {
+        OnsetKind::Fricative { .. } => (0.045 * sample_rate).round() as usize,
+        OnsetKind::Plosive => (0.030 * sample_rate).round() as usize,
+        OnsetKind::Nasal => (0.040 * sample_rate).round() as usize,
         _ => 0,
     };
     let lead = onset_lead.min(length);
-    // Nasal lead uses its own two resonators on the same glottal source.
-    let mut n1 = Resonator::new(250.0, 100.0, sample_rate);
-    let mut n2 = Resonator::new(1000.0, 150.0, sample_rate);
-    // High fricative resonator for S / F leads.
-    let fricative_centre = match syllable.onset {
-        Some(Onset::F) => 2200.0,
-        _ => 5500.0,
+    // 前导专用滤波器在循环外构造一次（保持 IIR 状态跨样本）。
+    let mut fricative = match &onset {
+        OnsetKind::Fricative { center, bandwidth } => Some(AllPole::from_formants(&[(*center, *bandwidth)], sample_rate)),
+        _ => None,
     };
-    let mut fricative = Resonator::new(fricative_centre, 1500.0, sample_rate);
+    let mut nasal = match &onset {
+        OnsetKind::Nasal => Some(AllPole::from_formants(&[(250.0, 100.0), (1000.0, 150.0)], sample_rate)),
+        _ => None,
+    };
+
+    // 声道：目标共振峰全极点滤波器。
+    let mut tract = AllPole::from_formants(
+        &formants.map(|f| (f, 90.0)),
+        sample_rate,
+    );
+    let mut tract_gain = tract.dc_gain();
+    let onset_lead_f = (length as f32 * 0.3).max(1.0);
 
     let attack = (0.015 * sample_rate).round() as usize;
     let release = (0.045 * sample_rate).round() as usize;
-    // Glottal one-pole integration state for this syllable.
-    let mut glottal_state = 0.0_f32;
     let cycle = 2.0 * std::f32::consts::PI / spec.vibrato.rate_hz.max(0.01);
 
     for (index, slot) in out.iter_mut().enumerate() {
         let t = index as f32 / sample_rate;
 
-        // --- onset lead-in ------------------------------------------------
+        // --- 起音前导：擦音/爆音/鼻音 -------------------------------------
         if index < lead {
-            *slot = match syllable.onset {
-                Some(Onset::S | Onset::F) => {
-                    // Band-limited-ish fricative: noise through a high
-                    // resonator; F opens with a softer spectral centre.
-                    let raw = (breath.next_u32() as f32 / u32::MAX as f32) * 2.0 - 1.0;
-                    fricative.process(raw) * 0.9
+            *slot = match &onset {
+                OnsetKind::Fricative { .. } => {
+                    let raw = (breath_rng.next_u32() as f32 / u32::MAX as f32) * 2.0 - 1.0;
+                    fricative.as_mut().expect("fricative filter").process(raw) * 0.9
                 }
-                Some(Onset::T) => {
-                    // Plosive: closed glottis (silence) then a broadband click.
+                OnsetKind::Plosive => {
                     if t < 0.022 {
                         0.0
                     } else {
-                        let raw = (breath.next_u32() as f32 / u32::MAX as f32) * 2.0 - 1.0;
+                        let raw = (breath_rng.next_u32() as f32 / u32::MAX as f32) * 2.0 - 1.0;
                         raw * 0.7
                     }
                 }
-                Some(Onset::N) => {
-                    // Nasal hum: nasal formants on the same glottal source.
+                OnsetKind::Nasal => {
                     *phase += 2.0 * std::f32::consts::PI * syllable.pitch / sample_rate;
-                    let source = glottal(phase, breath, spec.breath, &mut glottal_state);
-                    (n1.process(source) + n2.process(source) * 0.4) * 0.7
+                    let source = tables.sample(rd, *phase / (2.0 * std::f32::consts::PI));
+                    nasal.as_mut().expect("nasal filter").process(source) * 0.7
                 }
                 _ => 0.0,
             };
             continue;
         }
 
-        // --- voiced body --------------------------------------------------
-        // Formant glide over the onset fraction, then the vowel target.
-        let glide_t = if onset_fraction > 0.0 && index < (length as f32 * onset_fraction) as usize {
-            (t / (seconds * onset_fraction)).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        if glide_t < 1.0 {
-            f1.retune(glide_from[0] + (glide_to[0] - glide_from[0]) * glide_t, 90.0, sample_rate);
-            f2.retune(glide_from[1] + (glide_to[1] - glide_from[1]) * glide_t, 100.0, sample_rate);
-            f3.retune(glide_from[2] + (glide_to[2] - glide_from[2]) * glide_t, 130.0, sample_rate);
+        // --- 声道：滑音或目标 --------------------------------------------
+        if let OnsetKind::Glide { from } = onset {
+            let glide_t = ((index - lead) as f32 / (onset_lead_f.max(1.0))).clamp(0.0, 1.0);
+            if glide_t < 1.0 {
+                let blended = [
+                    from[0] + (formants[0] - from[0]) * glide_t,
+                    from[1] + (formants[1] - from[1]) * glide_t,
+                    from[2] + (formants[2] - from[2]) * glide_t,
+                ];
+                tract = AllPole::from_formants(&blended.map(|f| (f, 90.0)), sample_rate);
+                tract_gain = tract.dc_gain();
+            }
         }
 
-        // Vibrato ramps in after the delay, one smooth LFO period envelope.
+        // --- 颤音 ---------------------------------------------------------
         let vibrato = if spec.vibrato.depth > 0.0 && t > spec.vibrato.delay_s {
             let since = t - spec.vibrato.delay_s;
             let envelope = (since * cycle / cycle).min(1.0);
@@ -196,10 +181,17 @@ fn render_syllable(
         };
         *phase += 2.0 * std::f32::consts::PI * syllable.pitch * (1.0 + vibrato) / sample_rate;
 
-        let source = glottal(phase, breath, spec.breath, &mut glottal_state);
-        let shaped = f1.process(source) + f2.process(source) * 0.6 + f3.process(source) * 0.3;
+        // --- LF 声门源 ----------------------------------------------------
+        let source = tables.sample(rd, *phase / (2.0 * std::f32::consts::PI));
 
-        // Attack / release envelope over the voiced part.
+        // --- 气声噪声（谐波 + 噪声模型）-----------------------------------
+        let noise = (breath_rng.next_u32() as f32 / u32::MAX as f32) * 2.0 - 1.0;
+        let mixed = source + noise * spec.breath;
+
+        // --- 声道滤波 -----------------------------------------------------
+        let shaped = tract.process(mixed) / tract_gain;
+
+        // --- 包络 ---------------------------------------------------------
         let voiced_index = index - lead;
         let voiced_length = length - lead;
         let mut envelope = 1.0;
@@ -212,17 +204,6 @@ fn render_syllable(
         }
         *slot = shaped * envelope * 0.55;
     }
-}
-
-/// Glottal source: a phase-continuous pulse train integrated once (one-pole)
-/// for spectral rolloff, plus deterministic breath noise from the song's
-/// `Rng` stream.
-fn glottal(phase: &mut f32, breath: &mut Rng, breath_amount: f32, state: &mut f32) -> f32 {
-    let wrapped = *phase % std::f32::consts::TAU;
-    let pulse = (wrapped / std::f32::consts::TAU) * 2.0 - 1.0;
-    *state = 0.92 * *state + 0.08 * pulse;
-    let noise = (breath.next_u32() as f32 / u32::MAX as f32) * 2.0 - 1.0;
-    *state * 0.9 + noise * breath_amount * 0.35
 }
 
 #[cfg(test)]
@@ -277,8 +258,7 @@ mod tests {
         let samples_a = render(&a, 44_100.0).expect("a");
         let samples_b = render(&b, 44_100.0).expect("b");
         assert_ne!(samples_a, samples_b, "breath noise differs per seed");
-        // 音高一致：主周期峰值位置近似相同（这里只验证非静音且有限）。
-        for frame in samples_b.iter().take(samples_b.len()) {
+        for frame in samples_b.iter() {
             assert!(frame[0].is_finite() && frame[1].is_finite());
         }
     }
@@ -307,6 +287,6 @@ mod tests {
         ]);
         let samples = render(&spec, 44_100.0).expect("valid spec");
         let bytes: Vec<u8> = samples.iter().flat_map(|f| f[0].to_ne_bytes()).collect();
-        assert_eq!(fnv1a64(&bytes), 1917150972074027508, "engine constants are pinned");
+        assert_eq!(fnv1a64(&bytes), 9562453024053591702, "engine constants are pinned");
     }
 }
