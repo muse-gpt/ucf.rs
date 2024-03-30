@@ -12,3 +12,6 @@ publish.workspace = true
 media-dsp = { workspace = true }
 media-types = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
