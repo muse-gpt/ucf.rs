@@ -33,8 +33,18 @@
 //! assert!(samples.len() > 1000);
 //! ```
 
+pub mod instruments;
+pub mod patterns;
 pub mod spec;
 pub mod voices;
 
+pub use instruments::{
+    INSTRUMENT_PRESETS, Instrument, InstrumentPreset, InstrumentSpec, instrument_preset, instrument_preset_names,
+    midi_to_hz, render_instrument,
+};
+pub use patterns::{
+    DrumPattern, PatternEvent, PatternPreset, PatternTrack, pattern_preset, pattern_preset_names, pattern_presets,
+    render_pattern,
+};
 pub use spec::{Family, PRESETS, Preset, SfxSpec, preset, preset_names};
 pub use voices::render;
