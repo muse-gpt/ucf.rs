@@ -585,6 +585,9 @@ pub struct AudioSpec {
     pub narration: Option<NarrationSpec>,
     #[serde(default)]
     pub sfx: Vec<SfxSpec>,
+    /// Synthesized voice placed on the timeline (the singing half of the pair).
+    #[serde(default)]
+    pub voice: Vec<VoicePlacementSpec>,
     /// Imported audio placed on the timeline, mixed over the synthesized bed.
     #[serde(default)]
     pub clips: Vec<AudioClipSpec>,
@@ -640,13 +643,58 @@ fn default_one() -> f32 {
     1.0
 }
 
+/// One synthesized effect placed on the bed.
+///
+/// Either `kind` (a canonical family name) or `preset` (a shared catalogue
+/// name) selects the sound; both together is an input-contract violation, not
+/// a silent priority rule. The optional parameter fields override the resolved
+/// base spec, so authoring can start from a preset and adjust one control.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SfxSpec {
     pub at: u32,
-    pub kind: String,
     #[serde(default = "default_sfx_volume")]
     pub volume: f32,
+    /// Canonical family name (`whoosh` … `sparkle`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    /// Named shared preset (`impact-deep`, `riser-tension`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    /// Length in seconds; omitted means the family/preset default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f32>,
+    /// Pitch multiplier, 1.0 is the base value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pitch: Option<f32>,
+    /// 0 dark … 1 bright.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brightness: Option<f32>,
+    /// Output gain before the placement volume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intensity: Option<f32>,
+    /// Stereo position, -1 left … 1 right.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pan: Option<f32>,
+    /// Deterministic seed for the sound's noise streams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
+}
+
+/// One synthesized song placed at `at` frames.
+///
+/// The song itself is the `media.voice` contract (syllables, tempo, vibrato,
+/// breath, volume, seed), unchanged: the film IR carries the same wire shape
+/// with camelCase keys and rejects unknown fields.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct VoicePlacementSpec {
+    pub at: u32,
+    /// Track gain applied on top of the song's own `volume`.
+    #[serde(default = "default_one")]
+    pub volume: f32,
+    /// The song to synthesize.
+    pub song: media_voice::VoiceSpec,
 }
 
 fn default_sfx_volume() -> f32 {

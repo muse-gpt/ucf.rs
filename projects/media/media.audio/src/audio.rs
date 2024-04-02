@@ -5,35 +5,114 @@
 //! about scenes — the scene audio bed IR is lowered into a plan by the caller.
 //!
 //! Sound effects are rendered by `media.synthesis` (the single formal synth
-//! core, OpenSFX semantics) and mixed into the bed; the mixer owns none of
-//! the voice algorithms. The BGM pad and plucks stay here as orchestration,
-//! and every random choice in this crate consumes the same `media.dsp::Rng`
-//! stream as the voices — one formal random contract for all sound paths.
-//! Narration is a reserved slot: if the plan points at a PCM WAV file it is
-//! decoded and mixed in; otherwise the slot stays silent. Sample rate and
-//! channels are input contracts: nothing is resampled implicitly between
-//! synthesis and the written buffer. An unknown `sfx` kind is an explicit
-//! `invalid_input` error, never a silent skip.
+//! core, OpenSFX semantics) and songs by `media.voice` (the vocal half); the
+//! mixer owns neither algorithm, it only resolves placements and mixes. The
+//! BGM pad and plucks stay here as orchestration, and every random choice in
+//! this crate consumes the same `media.dsp::Rng` stream as the voices — one
+//! formal random contract for all sound paths. Narration is a reserved slot:
+//! if the plan points at a PCM WAV file it is decoded and mixed in; otherwise
+//! the slot stays silent. Sample rate and channels are input contracts:
+//! nothing is resampled implicitly between synthesis and the written buffer.
+//! An unknown `sfx` family or preset is an explicit `invalid_input` error,
+//! never a silent skip.
 
 use media_codec::DecodeLimits;
 use media_codec::MediaLibrary;
 use media_codec::parse_wav_pcm16;
 use media_dsp::Rng;
+use media_synthesis::preset as shared_preset;
 use media_synthesis::{Family, SfxSpec, render};
 use media_types::Error;
 use media_types::TimeBase;
+use media_voice::VoiceSpec;
 
 /// One synthesized effect placed on the track.
 ///
-/// `kind` is a canonical family name resolved by `media_synthesis::Family::parse`.
-/// The scene IR carries no per-effect duration, pitch or seed, so placements
-/// render with the unified defaults: [`SfxSpec::new`] at the per-family
-/// placement length below. The same kind therefore sounds the same at every
-/// position — placement-derived seeds are deliberately not a thing.
+/// The authoring pair — family name *or* preset name — is resolved here
+/// through the shared domains (`media_synthesis::Family::parse` and the
+/// preset catalogue), and explicit parameter overrides are applied on top.
+/// Providing both is an input-contract violation, never a silent priority
+/// rule; an unknown family or preset is an explicit `invalid_input` error.
+#[derive(Clone, Debug)]
+pub struct SfxRequest {
+    /// Canonical family name, e.g. `whoosh`.
+    pub family: Option<String>,
+    /// Named catalogue preset, e.g. `impact-deep`.
+    pub preset: Option<String>,
+    pub duration: Option<f32>,
+    pub pitch: Option<f32>,
+    pub brightness: Option<f32>,
+    pub intensity: Option<f32>,
+    pub pan: Option<f32>,
+    pub seed: Option<u32>,
+}
+
+impl SfxRequest {
+    /// A request that names only a family and takes every other default.
+    #[must_use]
+    pub fn family(name: &str) -> Self {
+        Self {
+            family: Some(name.to_owned()),
+            preset: None,
+            duration: None,
+            pitch: None,
+            brightness: None,
+            intensity: None,
+            pan: None,
+            seed: None,
+        }
+    }
+
+    /// Resolves the request to a renderable spec.
+    ///
+    /// # Errors
+    /// Exactly one of `family`/`preset` is required; unknown names, unknown
+    /// catalogue entries and out-of-range overrides are `invalid_input`.
+    pub fn resolve(&self) -> Result<SfxSpec, Error> {
+        let base = match (&self.family, &self.preset) {
+            (Some(_), Some(_)) => {
+                return Err(Error::invalid_input("sfx placement must name either `kind` or `preset`, not both"));
+            }
+            (None, None) => {
+                return Err(Error::invalid_input("sfx placement must name `kind` or `preset`"));
+            }
+            (Some(family), None) => {
+                let family =
+                    Family::parse(family).ok_or_else(|| Error::invalid_input(format!("unknown sfx kind {family}")))?;
+                SfxSpec::new(family, sfx_placement_duration(family))
+            }
+            (None, Some(name)) => shared_preset(name)
+                .ok_or_else(|| Error::invalid_input(format!("unknown sfx preset {name}")))?,
+        };
+        let spec = SfxSpec {
+            duration: self.duration.unwrap_or(base.duration),
+            pitch: self.pitch.unwrap_or(base.pitch),
+            brightness: self.brightness.unwrap_or(base.brightness),
+            intensity: self.intensity.unwrap_or(base.intensity),
+            pan: self.pan.unwrap_or(base.pan),
+            seed: self.seed.unwrap_or(base.seed),
+            ..base
+        };
+        spec.validate()?;
+        Ok(spec)
+    }
+}
+
+/// One synthesized effect placed at `at_frames`.
 #[derive(Clone, Debug)]
 pub struct SfxPlacement {
-    pub kind: String,
+    pub request: SfxRequest,
     pub at_frames: u32,
+    pub volume: f32,
+}
+
+/// One synthesized song placed at `at_frames`.
+#[derive(Clone, Debug)]
+pub struct VoicePlacement {
+    /// The song itself (the `media.voice` contract).
+    pub song: VoiceSpec,
+    pub at_frames: u32,
+    /// Track gain on top of the song's own `volume`.
     pub volume: f32,
 }
 
@@ -104,6 +183,8 @@ pub struct AudioPlan {
     pub bgm: Option<BgmPlan>,
     pub narration: Option<NarrationPlacement>,
     pub sfx: Vec<SfxPlacement>,
+    /// Synthesized songs placed on the timeline.
+    pub voice: Vec<VoicePlacement>,
     pub clips: Vec<ClipPlacement>,
 }
 
@@ -127,19 +208,15 @@ pub fn build_audio(plan: &AudioPlan, media: &mut MediaLibrary, limits: DecodeLim
         synth_plucks(&mut buf, bgm.volume * 0.5, plan.sample_rate);
     }
     for sfx in &plan.sfx {
-        let family = Family::parse(&sfx.kind).ok_or_else(|| Error::invalid_input(format!("unknown sfx kind {}", sfx.kind)))?;
-        let spec = SfxSpec::new(family, sfx_placement_duration(family));
+        let spec = sfx.request.resolve()?;
         let samples = render(&spec, plan.sample_rate as f32)?;
         let start = plan.time_base.to_samples(sfx.at_frames, plan.sample_rate);
-        let total = frames_len(&buf);
-        for (i, frame) in samples.iter().enumerate() {
-            let at = start + i;
-            if at >= total {
-                break;
-            }
-            buf[at * 2] += frame[0] * sfx.volume;
-            buf[at * 2 + 1] += frame[1] * sfx.volume;
-        }
+        mix_frames(&mut buf, start, &samples, sfx.volume);
+    }
+    for voice in &plan.voice {
+        let samples = media_voice::render(&voice.song, plan.sample_rate as f32)?;
+        let start = plan.time_base.to_samples(voice.at_frames, plan.sample_rate);
+        mix_frames(&mut buf, start, &samples, voice.volume);
     }
     if let Some(narration) = &plan.narration {
         mix_wav(&mut buf, &narration.wav, narration.delay_frames, narration.volume, plan)?;
@@ -178,6 +255,19 @@ pub fn build_audio(plan: &AudioPlan, media: &mut MediaLibrary, limits: DecodeLim
 
 fn frames_len(buf: &[f32]) -> usize {
     buf.len() / 2
+}
+
+/// Mixes a stereo render into the bed from `start` frames, clipped at the end.
+fn mix_frames(buf: &mut [f32], start: usize, samples: &[[f32; 2]], volume: f32) {
+    let total = frames_len(buf);
+    for (i, frame) in samples.iter().enumerate() {
+        let at = start + i;
+        if at >= total {
+            break;
+        }
+        buf[at * 2] += frame[0] * volume;
+        buf[at * 2 + 1] += frame[1] * volume;
+    }
 }
 
 /// Linear fade gain for placed sample `i` of a `placed`-long region.
@@ -293,14 +383,19 @@ mod tests {
             bgm: None,
             narration: None,
             sfx,
+            voice: Vec::new(),
             clips: Vec::new(),
         }
+    }
+
+    fn effect(family: &str, at_frames: u32, volume: f32) -> SfxPlacement {
+        SfxPlacement { request: SfxRequest::family(family), at_frames, volume }
     }
 
     #[test]
     fn placed_effects_are_audible() {
         let bed = build_audio(
-            &plan(vec![SfxPlacement { kind: "whoosh".into(), at_frames: 10, volume: 0.5 }]),
+            &plan(vec![effect("whoosh", 10, 0.5)]),
             &mut MediaLibrary::new(),
             DecodeLimits::unbounded(),
         )
@@ -314,13 +409,13 @@ mod tests {
     #[test]
     fn same_kind_sounds_identical_at_any_position() {
         let a = build_audio(
-            &plan(vec![SfxPlacement { kind: "impact".into(), at_frames: 0, volume: 0.5 }]),
+            &plan(vec![effect("impact", 0, 0.5)]),
             &mut MediaLibrary::new(),
             DecodeLimits::unbounded(),
         )
         .expect("bed a");
         let b = build_audio(
-            &plan(vec![SfxPlacement { kind: "impact".into(), at_frames: 37, volume: 0.5 }]),
+            &plan(vec![effect("impact", 37, 0.5)]),
             &mut MediaLibrary::new(),
             DecodeLimits::unbounded(),
         )
@@ -379,13 +474,74 @@ mod tests {
     #[test]
     fn unknown_kind_is_an_explicit_error() {
         let error = build_audio(
-            &plan(vec![SfxPlacement { kind: "airhorn".into(), at_frames: 0, volume: 0.5 }]),
+            &plan(vec![effect("airhorn", 0, 0.5)]),
             &mut MediaLibrary::new(),
             DecodeLimits::unbounded(),
         )
         .expect_err("unknown kind must fail");
         assert_eq!(error.code(), "invalid_input");
         assert!(error.message.contains("airhorn"));
+    }
+
+    #[test]
+    fn preset_and_family_are_mutually_exclusive_and_presets_resolve() {
+        let mut preset = effect("", 0, 0.5);
+        preset.request = SfxRequest {
+            family: None,
+            preset: Some("impact-deep".into()),
+            duration: None,
+            pitch: None,
+            brightness: None,
+            intensity: None,
+            pan: None,
+            seed: None,
+        };
+        let spec = preset.request.resolve().expect("preset resolves");
+        assert_eq!(spec.duration, 1.4, "preset owns its duration");
+        assert_eq!(spec.seed, 31, "preset owns its seed");
+
+        let mut both = preset.request.clone();
+        both.family = Some("impact".into());
+        let error = both.resolve().expect_err("both names is a contract violation");
+        assert!(error.message.contains("not both"), "{error}");
+
+        let unknown = SfxRequest { preset: Some("no-such-preset".into()), ..SfxRequest::family("impact") };
+        let unknown = SfxRequest { family: None, ..unknown };
+        let error = unknown.resolve().expect_err("unknown preset");
+        assert!(error.message.contains("no-such-preset"), "{error}");
+    }
+
+    #[test]
+    fn overrides_apply_on_top_of_a_family_base() {
+        let mut request = SfxRequest::family("tick");
+        request.duration = Some(0.25);
+        request.pitch = Some(2.0);
+        request.pan = Some(-0.5);
+        let spec = request.resolve().expect("override resolves");
+        assert_eq!(spec.duration, 0.25);
+        assert_eq!(spec.pitch, 2.0);
+        assert_eq!(spec.pan, -0.5);
+        // 越界覆盖必须在渲染前显式报错。
+        request.duration = Some(0.001);
+        assert_eq!(request.resolve().expect_err("out of range").code(), "invalid_input");
+    }
+
+    #[test]
+    fn placed_voice_is_audible_and_positioned() {
+        let song = media_voice::VoiceSpec::new(vec![media_voice::Syllable {
+            onset: None,
+            vowel: media_voice::Vowel::A,
+            pitch: 330.0,
+            beats: 1.0,
+        }]);
+        let mut p = plan(Vec::new());
+        p.voice = vec![VoicePlacement { song, at_frames: 15, volume: 0.9 }];
+        let bed = build_audio(&p, &mut MediaLibrary::new(), DecodeLimits::unbounded()).expect("bed");
+        let start = 15 * 44_100 / 30;
+        let region = &bed[start * 2..(start + 44_100 / 2) * 2];
+        let peak = region.iter().fold(0i16, |a, s| a.max(s.abs()));
+        assert!(peak > 200, "voice region too quiet: {peak}");
+        assert!(bed[..start * 2].iter().all(|s| *s == 0), "nothing may sound before the placement");
     }
 
     #[test]

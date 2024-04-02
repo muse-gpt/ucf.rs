@@ -7,7 +7,7 @@ use geometry::camera_at;
 use geometry::smooth_polyline;
 use geometry::{Rgba, parse, parse_or};
 use geometry::{apply, fade};
-use media_audio::{AudioPlan, BgmPlan, ClipPlacement, NarrationPlacement, SfxPlacement, build_audio};
+use media_audio::{AudioPlan, BgmPlan, ClipPlacement, NarrationPlacement, SfxPlacement, SfxRequest, VoicePlacement, build_audio};
 use media_codec::DecodeLimits;
 use media_codec::Encoder;
 use media_codec::MediaLibrary;
@@ -133,7 +133,33 @@ pub fn lower_audio(project: &Project) -> AudioPlan {
             volume: n.volume,
         }),
         sfx: spec
-            .map(|a| a.sfx.iter().map(|s| SfxPlacement { kind: s.kind.clone(), at_frames: s.at, volume: s.volume }).collect())
+            .map(|a| {
+                a.sfx
+                    .iter()
+                    .map(|s| SfxPlacement {
+                        request: SfxRequest {
+                            family: s.kind.clone(),
+                            preset: s.preset.clone(),
+                            duration: s.duration,
+                            pitch: s.pitch,
+                            brightness: s.brightness,
+                            intensity: s.intensity,
+                            pan: s.pan,
+                            seed: s.seed,
+                        },
+                        at_frames: s.at,
+                        volume: s.volume,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        voice: spec
+            .map(|a| {
+                a.voice
+                    .iter()
+                    .map(|v| VoicePlacement { song: v.song.clone(), at_frames: v.at, volume: v.volume })
+                    .collect()
+            })
             .unwrap_or_default(),
         clips: spec
             .map(|a| {
@@ -953,6 +979,46 @@ mod tests {
         let error = media_audio::build_audio(&plan, &mut media, media_codec::DecodeLimits::unbounded())
             .expect_err("unknown kind must fail explicitly");
         assert_eq!(error.code(), "invalid_input");
+    }
+
+    /// The OpenCut voice path end to end: a song written as scene wire JSON
+    /// lowers to a voice placement and is synthesized into the film bed at the
+    /// declared frame, without touching any external audio asset.
+    #[test]
+    fn voice_bed_is_synthesized_from_wire_json() {
+        let json = serde_json::json!({
+            "width": 64, "height": 64, "fps": 30, "durationFrames": 90,
+            "scenes": [],
+            "audio": {
+                "sfx": [{ "at": 0, "preset": "impact-snap", "volume": 0.5 }],
+                "voice": [{
+                    "at": 15,
+                    "volume": 0.9,
+                    "song": {
+                        "tempoBpm": 120,
+                        "vibrato": { "rateHz": 5.0, "depth": 0.02, "delayS": 0.1 },
+                        "breath": 0.1,
+                        "seed": 3,
+                        "syllables": [
+                            { "onset": "r", "vowel": "a", "pitch": 392.0, "beats": 1.0 },
+                            { "vowel": "o", "pitch": 523.25, "beats": 1.0 }
+                        ]
+                    }
+                }]
+            }
+        })
+        .to_string();
+        let project: media_scene::Project = serde_json::from_str(&json).expect("wire json");
+        let plan = super::lower_audio(&project);
+        assert_eq!(plan.voice.len(), 1, "the song must lower to a voice placement");
+        assert_eq!(plan.voice[0].at_frames, 15);
+        assert!((plan.voice[0].song.tempo_bpm - 120.0).abs() < 1e-6, "tempoBpm must survive the wire");
+        let mut media = media_codec::MediaLibrary::new();
+        let bed = media_audio::build_audio(&plan, &mut media, media_codec::DecodeLimits::unbounded()).expect("bed");
+        let start = 15 * plan.sample_rate as usize / 30;
+        let end = (start + plan.sample_rate as usize / 2).min(bed.len() / 2);
+        let peak = bed[start * 2..end * 2].iter().fold(0i16, |m, s| m.max(s.abs()));
+        assert!(peak > 200, "voice region silent: peak {peak}");
     }
 
     /// Writes a PNG with our own encoder, imports it back through WIC and

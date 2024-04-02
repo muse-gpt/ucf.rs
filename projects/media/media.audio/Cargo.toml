@@ -13,3 +13,4 @@ media-types = { workspace = true }
 media-codec = { workspace = true }
 media-dsp = { workspace = true }
 media-synthesis = { workspace = true }
+media-voice = { workspace = true }
