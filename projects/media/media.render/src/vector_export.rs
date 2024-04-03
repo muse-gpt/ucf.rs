@@ -52,7 +52,6 @@ impl VectorFormat {
 
 /// Facts about a finished vector export run.
 #[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ExportedVector {
     pub out: String,
     pub format: &'static str,

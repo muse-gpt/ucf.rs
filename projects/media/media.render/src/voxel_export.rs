@@ -53,7 +53,6 @@ impl VoxelFormat {
 
 /// Facts about a finished voxel export run.
 #[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ExportedVoxel {
     pub out: String,
     pub format: &'static str,

@@ -11,7 +11,7 @@ use crate::instruments::{Instrument, InstrumentSpec, render_instrument};
 
 /// 一条节奏型音轨。
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct PatternTrack {
     pub instrument: Instrument,
     /// MIDI 音高；鼓组忽略（但保留以便统一数据形状）。
@@ -29,7 +29,7 @@ pub struct PatternTrack {
 
 /// 一个可循环的节奏型。
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct DrumPattern {
     pub bpm: f32,
     #[serde(default = "default_steps_per_bar")]

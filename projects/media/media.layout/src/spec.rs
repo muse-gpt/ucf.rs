@@ -1,10 +1,10 @@
 //! The host input contract: serde shape, absorbed defaults and validation.
 //!
 //! These types absorb the OpenComic N-API's `DocDto`/`PanelDto`/`TextDto`
-//! defaults with the wire shape unchanged (struct fields camelCase, the
+//! defaults with the domain wire shape (struct fields snake_case, the
 //! `kind` tag kebab-case, and the deliberate author-facing short key `width`
-//! for the text wrap width). The deliberate corrections, per the plan's
-//! error-unification ruling:
+//! for the text wrap width). Bindings map JS-style keys at their own boundary.
+//! The deliberate corrections, per the plan's error-unification ruling:
 //! - a malformed colour is an explicit [`media_types::Error::invalid_input`],
 //!   not the binding's silent `parse_or` fallback;
 //! - an unknown `fit` spelling fails deserialization instead of silently

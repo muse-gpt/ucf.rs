@@ -24,7 +24,6 @@ use media_types::hash;
 
 /// Facts about a finished render.
 #[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct RenderStats {
     pub frames: u32,
     pub width: u32,
@@ -913,7 +912,7 @@ mod tests {
             "width": 320,
             "height": 240,
             "fps": 15,
-            "durationFrames": 30,
+            "duration_frames": 30,
             "scenes": [{
                 "start": 0,
                 "duration": 30,
@@ -921,10 +920,10 @@ mod tests {
                 "items": [
                     { "kind": "text", "at": 0, "dur": 30, "content": "OpenCut", "size": 48.0,
                       "bold": true, "color": "#e6eefa", "x": 0.5, "y": 0.4, "align": "center",
-                      "fadeIn": 5, "fadeOut": 5 },
+                      "fade_in": 5, "fade_out": 5 },
                     { "kind": "counter", "at": 0, "dur": 30, "from": 0.0, "to": 1234.0, "x": 0.5,
                       "y": 0.7, "size": 36.0, "color": "#7aa2ff", "decimals": 0, "ease": "out-cubic",
-                      "fadeIn": 5, "fadeOut": 5 },
+                      "fade_in": 5, "fade_out": 5 },
                     { "kind": "progress", "at": 0, "dur": 30 }
                 ]
             }],
@@ -946,12 +945,12 @@ mod tests {
     #[test]
     fn renders_one_take_camera() {
         let project = serde_json::json!({
-            "width": 320, "height": 240, "fps": 15, "durationFrames": 30,
+            "width": 320, "height": 240, "fps": 15, "duration_frames": 30,
             "scenes": [{
                 "start": 0, "duration": 30,
                 "background": { "kind": "solid", "color": "#05070f" },
                 "items": [{
-                    "kind": "layer", "at": 0, "dur": 30, "zoomFrom": 0.9, "zoomTo": 2.0,
+                    "kind": "layer", "at": 0, "dur": 30, "zoom_from": 0.9, "zoom_to": 2.0,
                     "items": [
                         { "kind": "glow", "at": 0, "dur": 30, "x": 0.5, "y": 0.5,
                           "radius": 0.2, "color": "#ffcc88", "intensity": 1.0 },
@@ -976,7 +975,7 @@ mod tests {
     #[test]
     fn renders_without_audio_track() {
         let project = serde_json::json!({
-            "width": 320, "height": 240, "fps": 15, "durationFrames": 15,
+            "width": 320, "height": 240, "fps": 15, "duration_frames": 15,
             "scenes": [{ "start": 0, "duration": 15,
                 "background": { "kind": "solid", "color": "#101828" },
                 "items": [] }],
@@ -995,7 +994,7 @@ mod tests {
     #[test]
     fn sfx_bed_is_audible_deterministic_and_lowers_from_wire_json() {
         let json = serde_json::json!({
-            "width": 64, "height": 64, "fps": 30, "durationFrames": 90,
+            "width": 64, "height": 64, "fps": 30, "duration_frames": 90,
             "scenes": [],
             "audio": { "sfx": [
                 { "at": 10, "kind": "whoosh", "volume": 0.8 },
@@ -1021,7 +1020,7 @@ mod tests {
             assert!(peak > 200, "{name} region silent: peak {peak}");
         }
         let bad = serde_json::json!({
-            "width": 64, "height": 64, "fps": 30, "durationFrames": 10,
+            "width": 64, "height": 64, "fps": 30, "duration_frames": 10,
             "scenes": [], "audio": { "sfx": [{ "at": 0, "kind": "airhorn" }] }
         })
         .to_string();
@@ -1039,7 +1038,7 @@ mod tests {
     #[test]
     fn voice_bed_is_synthesized_from_wire_json() {
         let json = serde_json::json!({
-            "width": 64, "height": 64, "fps": 30, "durationFrames": 90,
+            "width": 64, "height": 64, "fps": 30, "duration_frames": 90,
             "scenes": [],
             "audio": {
                 "sfx": [{ "at": 0, "preset": "impact-snap", "volume": 0.5 }],
@@ -1047,8 +1046,8 @@ mod tests {
                     "at": 15,
                     "volume": 0.9,
                     "song": {
-                        "tempoBpm": 120,
-                        "vibrato": { "rateHz": 5.0, "depth": 0.02, "delayS": 0.1 },
+                        "tempo_bpm": 120,
+                        "vibrato": { "rate_hz": 5.0, "depth": 0.02, "delay_s": 0.1 },
                         "breath": 0.1,
                         "seed": 3,
                         "syllables": [
@@ -1078,7 +1077,7 @@ mod tests {
     #[test]
     fn instrument_notes_and_grooves_lower_from_wire_json() {
         let json = serde_json::json!({
-            "width": 64, "height": 64, "fps": 30, "durationFrames": 90,
+            "width": 64, "height": 64, "fps": 30, "duration_frames": 90,
             "scenes": [],
             "audio": {
                 "patterns": [{ "at": 0, "preset": "four-on-floor", "bars": 1, "volume": 0.9 }],
@@ -1100,7 +1099,7 @@ mod tests {
         assert!(peak > 500, "drums and bass must be audible: {peak}");
         // 未知乐器必须显式报错，不能静默丢弃。
         let bad = serde_json::json!({
-            "width": 64, "height": 64, "fps": 30, "durationFrames": 10,
+            "width": 64, "height": 64, "fps": 30, "duration_frames": 10,
             "scenes": [], "audio": { "notes": [{ "at": 0, "instrument": "theremin" }] }
         })
         .to_string();
@@ -1148,7 +1147,7 @@ mod tests {
         // 1. Produce a source clip with OpenCut itself.
         let source = dir.join("source.mp4");
         let clip = serde_json::json!({
-            "width": 160, "height": 120, "fps": 15, "durationFrames": 15,
+            "width": 160, "height": 120, "fps": 15, "duration_frames": 15,
             "scenes": [{ "start": 0, "duration": 15,
                 "background": { "kind": "solid", "color": "#c02030" }, "items": [] }],
             "audio": null
@@ -1184,7 +1183,7 @@ mod tests {
 
         // 3. Import both in a film.
         let film = serde_json::json!({
-            "width": 320, "height": 240, "fps": 15, "durationFrames": 30,
+            "width": 320, "height": 240, "fps": 15, "duration_frames": 30,
             "scenes": [{ "start": 0, "duration": 30,
                 "background": { "kind": "solid", "color": "#05070f" },
                 "items": [

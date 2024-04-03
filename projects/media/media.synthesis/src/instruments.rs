@@ -141,7 +141,6 @@ fn half() -> f32 {
 /// `note` 是 MIDI 音高（A4 = 69 = 440 Hz），鼓组忽略音高但保留字段以统一
 /// 数据形状；`decay` 控制尾音长短，`tone` 控制亮度，`gain` 是输出电平。
 #[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct InstrumentSpec {
     pub instrument: Instrument,
     #[serde(default = "default_seed")]

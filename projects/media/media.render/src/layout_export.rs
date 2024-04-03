@@ -80,7 +80,6 @@ impl ImageStore for MediaImages<'_> {
 
 /// Facts about a finished layout export run.
 #[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ExportedPage {
     pub out: String,
     pub width: u32,

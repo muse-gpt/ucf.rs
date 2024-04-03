@@ -17,7 +17,6 @@ use media_types::{Error, TimeBase};
 
 /// Facts about a finished image pipeline run.
 #[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct ProcessedImage {
     pub out: String,
     pub width: u32,

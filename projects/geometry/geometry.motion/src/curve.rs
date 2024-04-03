@@ -29,7 +29,6 @@ impl CameraPose {
 
 /// A key on a camera curve, positioned by absolute frame.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct CameraKey {
     pub at: u32,
     pub zoom: f32,

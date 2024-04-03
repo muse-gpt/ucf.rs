@@ -1,7 +1,7 @@
 //! 效果栈的中立声明合同：spec → 校验/规范化 → 执行 → 输出。
 //!
 //! 从零设计（上游此前没有栈的序列化合同）。形状遵循仓内既有 serde 约定：
-//! 结构体 `rename_all = "camelCase"`，tagged enum `tag = "kind"` 且
+//! 结构体使用 Rust 原生 snake_case 字段名，tagged enum `tag = "kind"` 且
 //! `rename_all = "kebab-case"`。栈有序（前到后应用），空栈合法。
 //!
 //! 校验即拒绝：参数必须有限且落在算子合同域内，越界返回显式
@@ -29,7 +29,6 @@ use media_particles::{Beams, Particles};
 
 /// 一份完整的效果栈声明。
 #[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct StackSpec {
     /// 应用顺序即列表顺序；缺省与空列表都是合法的恒等栈。
     #[serde(default)]

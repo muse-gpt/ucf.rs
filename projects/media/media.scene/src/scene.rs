@@ -14,7 +14,6 @@ pub use geometry::{CameraKey, CameraPose, Ease, camera_at};
 
 /// A complete renderable project.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct Project {
     pub width: u32,
     pub height: u32,
@@ -41,7 +40,6 @@ impl Project {
 
 /// One temporal block with a background and its items.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct Scene {
     pub start: u32,
     pub duration: u32,
@@ -57,7 +55,6 @@ pub struct Scene {
 
 /// A single camera move, interpolated across the whole scene.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct Camera {
     #[serde(default = "default_one")]
     pub zoom_from: f32,
@@ -81,7 +78,7 @@ fn default_center() -> [f32; 2] {
 
 /// Painted behind the items for the life of the scene.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Background {
     Solid {
         color: String,
@@ -209,7 +206,6 @@ pub enum Tone {
 
 /// Color roles for the built-in code highlighter.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct CodeTheme {
     #[serde(default)]
     pub panel: Option<String>,
@@ -262,7 +258,7 @@ fn default_fn() -> String {
 
 /// One animated element inside a scene. `at` and `dur` are scene-relative frames.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(tag = "kind", rename_all = "kebab-case", rename_all_fields = "camelCase")]
+#[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Item {
     Text {
         at: u32,
@@ -577,7 +573,6 @@ fn default_glow_color() -> String {
 /// Audio bed specification; everything is synthesized in-process except the
 /// reserved narration slot which mixes a PCM WAV file when provided.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct AudioSpec {
     #[serde(default)]
     pub bgm: Option<BgmSpec>,
@@ -601,7 +596,6 @@ pub struct AudioSpec {
 
 /// One imported audio file placed at `at` frames, playing from `offset`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct AudioClipSpec {
     pub src: String,
     #[serde(default)]
@@ -617,7 +611,6 @@ pub struct AudioClipSpec {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct BgmSpec {
     #[serde(default = "default_bgm_volume")]
     pub volume: f32,
@@ -636,7 +629,6 @@ fn default_bgm_mood() -> String {
 
 /// Narration is a slot, not a generator: OpenCut mixes the file you provide.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
 pub struct NarrationSpec {
     pub wav: String,
     #[serde(default)]
@@ -656,7 +648,7 @@ fn default_one() -> f32 {
 /// a silent priority rule. The optional parameter fields override the resolved
 /// base spec, so authoring can start from a preset and adjust one control.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct SfxSpec {
     pub at: u32,
     #[serde(default = "default_sfx_volume")]
@@ -690,10 +682,10 @@ pub struct SfxSpec {
 /// One synthesized song placed at `at` frames.
 ///
 /// The song itself is the `media.voice` contract (syllables, tempo, vibrato,
-/// breath, volume, seed), unchanged: the film IR carries the same wire shape
-/// with camelCase keys and rejects unknown fields.
+/// breath, volume, seed), unchanged: the film IR carries the same snake_case
+/// wire shape and rejects unknown fields.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct VoicePlacementSpec {
     pub at: u32,
     /// Track gain applied on top of the song's own `volume`.
@@ -709,7 +701,7 @@ pub struct VoicePlacementSpec {
 /// through the shared instrument catalogue; unknown names are explicit errors.
 /// `note` is a MIDI number (A4 = 69), `velocity` the hit gain.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct NoteSpec {
     pub at: u32,
     /// Canonical instrument name (`kick`, `snare`, `bass`, `pad`, …).
@@ -742,7 +734,7 @@ pub struct NoteSpec {
 /// Name either `preset` (a shipped groove) or `tracks` (a custom pattern) —
 /// both together is an input-contract violation, resolved in `media.audio`.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct PatternSpec {
     pub at: u32,
     /// Shipped groove name (`four-on-floor`, `breakbeat`, …).
@@ -764,7 +756,7 @@ pub struct PatternSpec {
 
 /// One custom groove track: a step-velocity list for one instrument.
 #[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct PatternTrackSpec {
     pub instrument: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -134,7 +134,7 @@ impl Onset {
 
 /// One sung syllable.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(deny_unknown_fields)]
 pub struct Syllable {
     /// Onset consonant class; `None` sings the vowel alone.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,7 +149,7 @@ pub struct Syllable {
 
 /// Vibrato: periodic pitch modulation while a syllable sustains.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct Vibrato {
     /// Modulation rate in Hz (0..10).
     pub rate_hz: f32,
@@ -167,12 +167,13 @@ impl Default for Vibrato {
 
 /// The singing-voice input contract: one deterministic, controllable song.
 ///
-/// The wire shape is camelCase (`tempoBpm`, `rateHz`, `delayS`) — the spelling
-/// the TypeScript authoring surface and OpenVocaloid always used. Unknown keys
-/// are rejected instead of silently ignored, so a misspelt control can never
-/// render a different song than the author asked for.
+/// The wire shape is the Rust snake_case field names (`tempo_bpm`,
+/// `rate_hz`, `delay_s`) — domain crates never rename fields to JS style;
+/// bindings do that mapping at their own boundary. Unknown keys are rejected
+/// instead of silently ignored, so a misspelt control can never render a
+/// different song than the author asked for.
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct VoiceSpec {
     /// The lyric: an ordered list of syllables. Empty is invalid.
     pub syllables: Vec<Syllable>,
@@ -337,36 +338,34 @@ mod tests {
     }
 
     #[test]
-    fn wire_shape_is_camel_case_and_rejects_unknown_keys() {
+    fn wire_shape_is_snake_case_and_rejects_unknown_keys() {
         let spec: VoiceSpec = serde_json::from_str(
             r#"{
                 "syllables": [{ "onset": "r", "vowel": "a", "pitch": 392.0, "beats": 1.0 }],
-                "tempoBpm": 96.0,
-                "vibrato": { "rateHz": 5.0, "depth": 0.03, "delayS": 0.2 },
+                "tempo_bpm": 96.0,
+                "vibrato": { "rate_hz": 5.0, "depth": 0.03, "delay_s": 0.2 },
                 "breath": 0.12,
                 "volume": 0.7,
                 "seed": 9
             }"#,
         )
-        .expect("camelCase wire shape");
-        assert!((spec.tempo_bpm - 96.0).abs() < 1e-6, "tempoBpm must land on tempo_bpm");
-        assert!((spec.vibrato.rate_hz - 5.0).abs() < 1e-6, "rateHz must land on rate_hz");
-        assert!((spec.vibrato.delay_s - 0.2).abs() < 1e-6, "delayS must land on delay_s");
+        .expect("snake_case wire shape");
+        assert!((spec.tempo_bpm - 96.0).abs() < 1e-6);
+        assert!((spec.vibrato.rate_hz - 5.0).abs() < 1e-6);
+        assert!((spec.vibrato.delay_s - 0.2).abs() < 1e-6);
         assert_eq!(spec.seed, 9);
-        // 拼错的键必须显式报错，不能静默渲染成另一首歌。
-        let error = serde_json::from_str::<VoiceSpec>(
-            r#"{ "syllables": [], "temporBpm": 96.0 }"#,
-        )
-        .expect_err("unknown keys are rejected");
-        assert!(error.to_string().contains("temporBpm"), "{error}");
+        // 域层不接受 JS 风格键：绑定必须自己做映射，拼错必须显式报错。
+        let error = serde_json::from_str::<VoiceSpec>(r#"{ "syllables": [], "tempoBpm": 96.0 }"#)
+            .expect_err("camelCase keys are not part of the domain wire shape");
+        assert!(error.to_string().contains("tempoBpm"), "{error}");
     }
 
     #[test]
-    fn serialises_back_to_the_same_camel_case_keys() {
+    fn serialises_back_to_the_same_snake_case_keys() {
         let mut spec = VoiceSpec::new(vec![syllable(Vowel::E, 330.0, 1.0)]);
         spec.tempo_bpm = 100.0;
         let json = serde_json::to_string(&spec).expect("serialisable");
-        for key in ["tempoBpm", "syllables", "vibrato", "breath", "volume", "seed"] {
+        for key in ["tempo_bpm", "syllables", "vibrato", "breath", "volume", "seed"] {
             assert!(json.contains(&format!("\"{key}\"")), "missing {key} in {json}");
         }
         let back: VoiceSpec = serde_json::from_str(&json).expect("round trip");

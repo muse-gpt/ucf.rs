@@ -2,7 +2,7 @@
 
 共享声音合成核心，三条并列的目录：
 
-1. **音效**：八个 family（`Family`）、输入合同 `SfxSpec`（serde wire：family kebab-case tag、字段 camelCase）、命名目录 `PRESETS` 与 `render(spec, sample_rate)`。
+1. **音效**：八个 family（`Family`）、输入合同 `SfxSpec`（serde wire：family kebab-case tag、字段为 Rust snake_case）、命名目录 `PRESETS` 与 `render(spec, sample_rate)`。
 2. **乐器**：17 件可演奏乐器（鼓组 9 + 旋律 8）、`InstrumentSpec`（MIDI 音高 + 力度 + 衰减）、`INSTRUMENT_PRESETS` 与 `render_instrument(spec, sample_rate)`。
 3. **节奏型**：`DrumPattern`（BPM、每小节步数、小节数、音轨步进力度）、`pattern_presets()`（8 种常用鼓点）与 `render_pattern(pattern, sample_rate)`；每一步复用 `render_instrument`。
 
