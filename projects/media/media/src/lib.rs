@@ -61,6 +61,8 @@ pub use media_render::{ImageOperation, ProcessedImage, process_image};
 pub use media_render::{RenderStats, render_project};
 #[cfg(feature = "sfx-export")]
 pub use media_render::{write_sfx, write_sfx_catalogue};
+#[cfg(feature = "sfx-export")]
+pub use media_render::{write_instrument, write_instrument_catalogue, write_pattern, write_pattern_catalogue};
 #[cfg(feature = "voice-export")]
 pub use media_render::write_voice;
 pub use media_types::Error;

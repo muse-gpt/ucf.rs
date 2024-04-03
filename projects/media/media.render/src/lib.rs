@@ -36,6 +36,12 @@ pub mod sfx;
 #[cfg(feature = "sfx-export")]
 pub use sfx::{write_sfx, write_sfx_catalogue};
 
+#[cfg(feature = "sfx-export")]
+pub mod music;
+
+#[cfg(feature = "sfx-export")]
+pub use music::{write_instrument, write_instrument_catalogue, write_pattern, write_pattern_catalogue};
+
 #[cfg(feature = "voice-export")]
 pub mod voice;
 

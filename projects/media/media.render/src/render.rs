@@ -7,7 +7,10 @@ use geometry::camera_at;
 use geometry::smooth_polyline;
 use geometry::{Rgba, parse, parse_or};
 use geometry::{apply, fade};
-use media_audio::{AudioPlan, BgmPlan, ClipPlacement, NarrationPlacement, SfxPlacement, SfxRequest, VoicePlacement, build_audio};
+use media_audio::{
+    AudioPlan, BgmPlan, ClipPlacement, InstrumentRequest, NarrationPlacement, NotePlacement, PatternPlacement,
+    PatternRequest, PatternTrackRequest, SfxPlacement, SfxRequest, VoicePlacement, build_audio,
+};
 use media_codec::DecodeLimits;
 use media_codec::Encoder;
 use media_codec::MediaLibrary;
@@ -158,6 +161,55 @@ pub fn lower_audio(project: &Project) -> AudioPlan {
                 a.voice
                     .iter()
                     .map(|v| VoicePlacement { song: v.song.clone(), at_frames: v.at, volume: v.volume })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        notes: spec
+            .map(|a| {
+                a.notes
+                    .iter()
+                    .map(|n| NotePlacement {
+                        request: InstrumentRequest {
+                            instrument: n.instrument.clone(),
+                            note: n.note,
+                            duration: n.duration,
+                            velocity: n.velocity,
+                            tone: n.tone,
+                            decay: n.decay,
+                            pan: n.pan,
+                            seed: n.seed,
+                        },
+                        at_frames: n.at,
+                        volume: 1.0,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        patterns: spec
+            .map(|a| {
+                a.patterns
+                    .iter()
+                    .map(|p| PatternPlacement {
+                        request: PatternRequest {
+                            preset: p.preset.clone(),
+                            bpm: p.bpm,
+                            bars: p.bars,
+                            tracks: p
+                                .tracks
+                                .iter()
+                                .map(|t| PatternTrackRequest {
+                                    instrument: t.instrument.clone(),
+                                    note: t.note,
+                                    steps: t.steps.clone(),
+                                    tone: t.tone,
+                                    decay: t.decay,
+                                    pan: t.pan,
+                                })
+                                .collect(),
+                        },
+                        at_frames: p.at,
+                        volume: p.volume,
+                    })
                     .collect()
             })
             .unwrap_or_default(),
@@ -1019,6 +1071,45 @@ mod tests {
         let end = (start + plan.sample_rate as usize / 2).min(bed.len() / 2);
         let peak = bed[start * 2..end * 2].iter().fold(0i16, |m, s| m.max(s.abs()));
         assert!(peak > 200, "voice region silent: peak {peak}");
+    }
+
+    /// Drums and instruments are authored in the film audio bed: a groove and
+    /// a bass note lower to the mixer and are audible at the declared frames.
+    #[test]
+    fn instrument_notes_and_grooves_lower_from_wire_json() {
+        let json = serde_json::json!({
+            "width": 64, "height": 64, "fps": 30, "durationFrames": 90,
+            "scenes": [],
+            "audio": {
+                "patterns": [{ "at": 0, "preset": "four-on-floor", "bars": 1, "volume": 0.9 }],
+                "notes": [
+                    { "at": 15, "instrument": "bass", "note": 36, "duration": 0.5, "velocity": 0.8 },
+                    { "at": 30, "instrument": "kick", "velocity": 0.9 }
+                ]
+            }
+        })
+        .to_string();
+        let project: media_scene::Project = serde_json::from_str(&json).expect("wire json");
+        let plan = super::lower_audio(&project);
+        assert_eq!(plan.patterns.len(), 1);
+        assert_eq!(plan.notes.len(), 2);
+        assert_eq!(plan.patterns[0].at_frames, 0);
+        let mut media = media_codec::MediaLibrary::new();
+        let bed = media_audio::build_audio(&plan, &mut media, media_codec::DecodeLimits::unbounded()).expect("bed");
+        let peak = bed.iter().fold(0i16, |a, s| a.max(s.abs()));
+        assert!(peak > 500, "drums and bass must be audible: {peak}");
+        // 未知乐器必须显式报错，不能静默丢弃。
+        let bad = serde_json::json!({
+            "width": 64, "height": 64, "fps": 30, "durationFrames": 10,
+            "scenes": [], "audio": { "notes": [{ "at": 0, "instrument": "theremin" }] }
+        })
+        .to_string();
+        let project = serde_json::from_str::<media_scene::Project>(&bad).expect("wire json");
+        let plan = super::lower_audio(&project);
+        let mut media = media_codec::MediaLibrary::new();
+        let error = media_audio::build_audio(&plan, &mut media, media_codec::DecodeLimits::unbounded())
+            .expect_err("unknown instrument must fail");
+        assert_eq!(error.code(), "invalid_input");
     }
 
     /// Writes a PNG with our own encoder, imports it back through WIC and

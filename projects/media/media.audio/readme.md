@@ -4,6 +4,7 @@
 
 - 不认识场景：场景 `AudioSpec` 由调用方（render 层）lowering 成 `AudioPlan`。
 - 音效算法不在本 crate：`SfxRequest` 只做「family 或 preset + 覆盖参数」的解析（`kind` 与 `preset` 同时给出是显式错误，未知名称是 `invalid_input`），渲染由 `media.synthesis` 完成。
+- 乐器/节奏型同理：`InstrumentRequest` 与 `PatternRequest` 只解析名称与参数，渲染分别由 `media.synthesis::render_instrument` / `render_pattern` 完成；未知乐器、互斥的 preset/tracks、越界步表都是显式错误。
 - 歌声算法不在本 crate：`VoicePlacement` 只带 `media.voice::VoiceSpec` 与放置位置/轨音量，渲染由 `media.voice` 完成。
 - 随机流唯一合同是 `media.dsp::Rng`：`synth_plucks` 与全部音效共用，不存在第二套随机设施。
 - 采样率与声道是输入合同：合成与写出之间不做隐式重采样，旁白采样率不符即报错。

@@ -588,6 +588,12 @@ pub struct AudioSpec {
     /// Synthesized voice placed on the timeline (the singing half of the pair).
     #[serde(default)]
     pub voice: Vec<VoicePlacementSpec>,
+    /// One-shot instrument notes placed on the timeline (drums, bass, pad, …).
+    #[serde(default)]
+    pub notes: Vec<NoteSpec>,
+    /// Drum grooves placed on the timeline.
+    #[serde(default)]
+    pub patterns: Vec<PatternSpec>,
     /// Imported audio placed on the timeline, mixed over the synthesized bed.
     #[serde(default)]
     pub clips: Vec<AudioClipSpec>,
@@ -695,6 +701,82 @@ pub struct VoicePlacementSpec {
     pub volume: f32,
     /// The song to synthesize.
     pub song: media_voice::VoiceSpec,
+}
+
+/// One instrument hit placed at `at` frames.
+///
+/// `instrument` is a canonical kebab-case name resolved by `media.audio`
+/// through the shared instrument catalogue; unknown names are explicit errors.
+/// `note` is a MIDI number (A4 = 69), `velocity` the hit gain.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NoteSpec {
+    pub at: u32,
+    /// Canonical instrument name (`kick`, `snare`, `bass`, `pad`, …).
+    pub instrument: String,
+    /// MIDI note number, 21..108 (percusssion ignores it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<u8>,
+    /// Length in seconds; omitted means the instrument's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration: Option<f32>,
+    /// Hit gain, 0..1.
+    #[serde(default = "default_one")]
+    pub velocity: f32,
+    /// Brightness, 0..1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tone: Option<f32>,
+    /// Tail length, 0..1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decay: Option<f32>,
+    /// Stereo position, -1..1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pan: Option<f32>,
+    /// Deterministic seed for the instrument's noise streams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seed: Option<u32>,
+}
+
+/// One drum groove placed at `at` frames.
+///
+/// Name either `preset` (a shipped groove) or `tracks` (a custom pattern) —
+/// both together is an input-contract violation, resolved in `media.audio`.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PatternSpec {
+    pub at: u32,
+    /// Shipped groove name (`four-on-floor`, `breakbeat`, …).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
+    /// Tempo override in BPM.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bpm: Option<f32>,
+    /// Bar count override (the pattern repeats).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bars: Option<u32>,
+    /// Custom tracks, used when no preset is named.
+    #[serde(default)]
+    pub tracks: Vec<PatternTrackSpec>,
+    /// Track gain on top of each step velocity.
+    #[serde(default = "default_one")]
+    pub volume: f32,
+}
+
+/// One custom groove track: a step-velocity list for one instrument.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PatternTrackSpec {
+    pub instrument: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<u8>,
+    /// Step velocities, 0 is a rest.
+    pub steps: Vec<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tone: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decay: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pan: Option<f32>,
 }
 
 fn default_sfx_volume() -> f32 {

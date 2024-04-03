@@ -20,8 +20,10 @@ use media_codec::DecodeLimits;
 use media_codec::MediaLibrary;
 use media_codec::parse_wav_pcm16;
 use media_dsp::Rng;
-use media_synthesis::preset as shared_preset;
-use media_synthesis::{Family, SfxSpec, render};
+use media_synthesis::{
+    DrumPattern, Family, Instrument, InstrumentSpec, PatternTrack, SfxSpec, pattern_preset, preset as shared_preset,
+    render as render_sfx, render_instrument, render_pattern,
+};
 use media_types::Error;
 use media_types::TimeBase;
 use media_voice::VoiceSpec;
@@ -116,6 +118,167 @@ pub struct VoicePlacement {
     pub volume: f32,
 }
 
+/// One instrument hit request: a canonical instrument name plus overrides.
+///
+/// The name is resolved through `media_synthesis::Instrument::parse` — the
+/// single owner of the kebab-case spelling. Unknown names, out-of-range notes,
+/// velocity or durations are explicit `invalid_input` errors.
+#[derive(Clone, Debug)]
+pub struct InstrumentRequest {
+    pub instrument: String,
+    pub note: Option<u8>,
+    pub duration: Option<f32>,
+    /// Hit gain, 0..1.
+    pub velocity: f32,
+    pub tone: Option<f32>,
+    pub decay: Option<f32>,
+    pub pan: Option<f32>,
+    pub seed: Option<u32>,
+}
+
+impl InstrumentRequest {
+    /// A request that names only an instrument and takes every other default.
+    #[must_use]
+    pub fn named(instrument: &str) -> Self {
+        Self {
+            instrument: instrument.to_owned(),
+            note: None,
+            duration: None,
+            velocity: 1.0,
+            tone: None,
+            decay: None,
+            pan: None,
+            seed: None,
+        }
+    }
+
+    /// Resolves to a renderable instrument spec.
+    ///
+    /// # Errors
+    /// Unknown instrument, out-of-range note/velocity/duration or non-finite
+    /// values are `invalid_input`.
+    pub fn resolve(&self) -> Result<InstrumentSpec, Error> {
+        let instrument = Instrument::parse(&self.instrument).ok_or_else(|| {
+            Error::invalid_input(format!(
+                "unknown instrument {} (kick|snare|clap|hat-closed|hat-open|tom|rim|shaker|crash|bass|pluck|pad|lead|bell|marimba|keys|strings)",
+                self.instrument
+            ))
+        })?;
+        let base = InstrumentSpec::new(instrument, self.note.unwrap_or(60));
+        let spec = InstrumentSpec {
+            duration: self.duration.unwrap_or(base.duration),
+            tone: self.tone.unwrap_or(base.tone),
+            decay: self.decay.unwrap_or(base.decay),
+            gain: self.velocity,
+            pan: self.pan.unwrap_or(base.pan),
+            seed: self.seed.unwrap_or(base.seed),
+            ..base
+        };
+        spec.validate()?;
+        Ok(spec)
+    }
+}
+
+/// One instrument hit placed at `at_frames`.
+#[derive(Clone, Debug)]
+pub struct NotePlacement {
+    pub request: InstrumentRequest,
+    pub at_frames: u32,
+    pub volume: f32,
+}
+
+/// One custom groove track.
+#[derive(Clone, Debug)]
+pub struct PatternTrackRequest {
+    pub instrument: String,
+    pub note: Option<u8>,
+    pub steps: Vec<f32>,
+    pub tone: Option<f32>,
+    pub decay: Option<f32>,
+    pub pan: Option<f32>,
+}
+
+/// One groove request: a shipped preset **or** custom tracks.
+#[derive(Clone, Debug)]
+pub struct PatternRequest {
+    pub preset: Option<String>,
+    pub bpm: Option<f32>,
+    pub bars: Option<u32>,
+    pub tracks: Vec<PatternTrackRequest>,
+}
+
+impl PatternRequest {
+    /// Resolves to a renderable groove.
+    ///
+    /// Exactly one of `preset`/`tracks` is required. A named preset owns its
+    /// instrument choices and step grid; `bpm`/`bars` override its timing.
+    /// Custom tracks use a 16-step bar and repeat single-bar step lists.
+    ///
+    /// # Errors
+    /// Both or neither selector, unknown preset/instrument and any range
+    /// violation are `invalid_input`.
+    pub fn resolve(&self) -> Result<DrumPattern, Error> {
+        match (&self.preset, self.tracks.is_empty()) {
+            (Some(_), false) => Err(Error::invalid_input(
+                "pattern placement must name either `preset` or `tracks`, not both",
+            )),
+            (None, true) => Err(Error::invalid_input("pattern placement must name `preset` or `tracks`")),
+            (Some(name), true) => {
+                let mut pattern =
+                    pattern_preset(name).ok_or_else(|| Error::invalid_input(format!("unknown pattern preset {name}")))?;
+                if let Some(bpm) = self.bpm {
+                    pattern.bpm = bpm;
+                }
+                if let Some(bars) = self.bars {
+                    pattern.bars = bars;
+                }
+                pattern.validate()?;
+                Ok(pattern)
+            }
+            (None, false) => {
+                let steps_per_bar = 16_u32;
+                let bars = self.bars.unwrap_or(1);
+                let mut tracks = Vec::with_capacity(self.tracks.len());
+                for track in &self.tracks {
+                    let instrument = Instrument::parse(&track.instrument).ok_or_else(|| {
+                        Error::invalid_input(format!("unknown instrument {} in pattern track", track.instrument))
+                    })?;
+                    let mut steps = track.steps.clone();
+                    let total = steps_per_bar as usize * bars as usize;
+                    if steps.len() == steps_per_bar as usize && bars > 1 {
+                        steps = steps.repeat(bars as usize);
+                    } else if steps.len() != total {
+                        return Err(Error::invalid_input(format!(
+                            "pattern track {} has {} steps, expected {steps_per_bar} (one bar, repeated) or {total}",
+                            track.instrument,
+                            steps.len()
+                        )));
+                    }
+                    tracks.push(PatternTrack {
+                        instrument,
+                        note: track.note.unwrap_or(60),
+                        steps,
+                        tone: track.tone.unwrap_or(0.5),
+                        decay: track.decay.unwrap_or(0.5),
+                        pan: track.pan.unwrap_or(0.0),
+                    });
+                }
+                let pattern = DrumPattern { bpm: self.bpm.unwrap_or(100.0), steps_per_bar, bars, tracks };
+                pattern.validate()?;
+                Ok(pattern)
+            }
+        }
+    }
+}
+
+/// One groove placed at `at_frames`.
+#[derive(Clone, Debug)]
+pub struct PatternPlacement {
+    pub request: PatternRequest,
+    pub at_frames: u32,
+    pub volume: f32,
+}
+
 /// Placement length in seconds per family when the plan carries no duration.
 /// The six values the old built-ins used are preserved so existing films keep
 /// their timing envelope; `ambience` and `sparkle` match their catalogue intent.
@@ -185,6 +348,10 @@ pub struct AudioPlan {
     pub sfx: Vec<SfxPlacement>,
     /// Synthesized songs placed on the timeline.
     pub voice: Vec<VoicePlacement>,
+    /// One-shot instrument notes placed on the timeline.
+    pub notes: Vec<NotePlacement>,
+    /// Drum grooves placed on the timeline.
+    pub patterns: Vec<PatternPlacement>,
     pub clips: Vec<ClipPlacement>,
 }
 
@@ -209,7 +376,7 @@ pub fn build_audio(plan: &AudioPlan, media: &mut MediaLibrary, limits: DecodeLim
     }
     for sfx in &plan.sfx {
         let spec = sfx.request.resolve()?;
-        let samples = render(&spec, plan.sample_rate as f32)?;
+        let samples = render_sfx(&spec, plan.sample_rate as f32)?;
         let start = plan.time_base.to_samples(sfx.at_frames, plan.sample_rate);
         mix_frames(&mut buf, start, &samples, sfx.volume);
     }
@@ -217,6 +384,18 @@ pub fn build_audio(plan: &AudioPlan, media: &mut MediaLibrary, limits: DecodeLim
         let samples = media_voice::render(&voice.song, plan.sample_rate as f32)?;
         let start = plan.time_base.to_samples(voice.at_frames, plan.sample_rate);
         mix_frames(&mut buf, start, &samples, voice.volume);
+    }
+    for note in &plan.notes {
+        let spec = note.request.resolve()?;
+        let samples = render_instrument(&spec, plan.sample_rate as f32)?;
+        let start = plan.time_base.to_samples(note.at_frames, plan.sample_rate);
+        mix_frames(&mut buf, start, &samples, note.volume);
+    }
+    for pattern in &plan.patterns {
+        let groove = pattern.request.resolve()?;
+        let samples = render_pattern(&groove, plan.sample_rate as f32)?;
+        let start = plan.time_base.to_samples(pattern.at_frames, plan.sample_rate);
+        mix_frames(&mut buf, start, &samples, pattern.volume);
     }
     if let Some(narration) = &plan.narration {
         mix_wav(&mut buf, &narration.wav, narration.delay_frames, narration.volume, plan)?;
@@ -384,6 +563,8 @@ mod tests {
             narration: None,
             sfx,
             voice: Vec::new(),
+            notes: Vec::new(),
+            patterns: Vec::new(),
             clips: Vec::new(),
         }
     }
@@ -542,6 +723,100 @@ mod tests {
         let peak = region.iter().fold(0i16, |a, s| a.max(s.abs()));
         assert!(peak > 200, "voice region too quiet: {peak}");
         assert!(bed[..start * 2].iter().all(|s| *s == 0), "nothing may sound before the placement");
+    }
+
+    #[test]
+    fn placed_instrument_notes_and_grooves_are_audible() {
+        let mut p = plan(Vec::new());
+        p.notes = vec![NotePlacement {
+            request: InstrumentRequest::named("kick"),
+            at_frames: 0,
+            volume: 0.9,
+        }];
+        let bed = build_audio(&p, &mut MediaLibrary::new(), DecodeLimits::unbounded()).expect("note bed");
+        let peak = bed[..44_100].iter().fold(0i16, |a, s| a.max(s.abs()));
+        assert!(peak > 500, "kick too quiet: {peak}");
+
+        let mut p = plan(Vec::new());
+        p.patterns = vec![PatternPlacement {
+            request: PatternRequest { preset: Some("four-on-floor".into()), bpm: None, bars: None, tracks: Vec::new() },
+            at_frames: 0,
+            volume: 0.9,
+        }];
+        let bed = build_audio(&p, &mut MediaLibrary::new(), DecodeLimits::unbounded()).expect("groove bed");
+        let peak = bed.iter().fold(0i16, |a, s| a.max(s.abs()));
+        assert!(peak > 500, "groove too quiet: {peak}");
+    }
+
+    #[test]
+    fn instrument_and_pattern_requests_reject_bad_input() {
+        let mut request = InstrumentRequest::named("theremin");
+        assert_eq!(request.resolve().expect_err("unknown").code(), "invalid_input");
+        request = InstrumentRequest::named("bass");
+        request.note = Some(10);
+        assert_eq!(request.resolve().expect_err("note").code(), "invalid_input");
+        request = InstrumentRequest::named("kick");
+        request.velocity = 2.0;
+        assert_eq!(request.resolve().expect_err("velocity").code(), "invalid_input");
+
+        let both = PatternRequest {
+            preset: Some("rock".into()),
+            bpm: None,
+            bars: None,
+            tracks: vec![PatternTrackRequest {
+                instrument: "kick".into(),
+                note: None,
+                steps: vec![1.0; 16],
+                tone: None,
+                decay: None,
+                pan: None,
+            }],
+        };
+        assert!(both.resolve().expect_err("both").message.contains("not both"));
+
+        let unknown = PatternRequest { preset: Some("polka".into()), bpm: None, bars: None, tracks: Vec::new() };
+        assert!(unknown.resolve().expect_err("unknown preset").message.contains("polka"));
+
+        let short = PatternRequest {
+            preset: None,
+            bpm: Some(120.0),
+            bars: Some(2),
+            tracks: vec![PatternTrackRequest {
+                instrument: "kick".into(),
+                note: None,
+                steps: vec![1.0; 8],
+                tone: None,
+                decay: None,
+                pan: None,
+            }],
+        };
+        assert!(short.resolve().expect_err("step grid").message.contains("steps"));
+    }
+
+    #[test]
+    fn custom_groove_repeats_one_bar_step_lists() {
+        let request = PatternRequest {
+            preset: None,
+            bpm: Some(120.0),
+            bars: Some(2),
+            tracks: vec![PatternTrackRequest {
+                instrument: "kick".into(),
+                note: None,
+                steps: {
+                    let mut steps = vec![0.0; 16];
+                    steps[0] = 1.0;
+                    steps[8] = 0.8;
+                    steps
+                },
+                tone: None,
+                decay: None,
+                pan: None,
+            }],
+        };
+        let pattern = request.resolve().expect("resolves");
+        assert_eq!(pattern.total_steps(), 32);
+        assert_eq!(pattern.tracks[0].steps.len(), 32);
+        assert_eq!(pattern.tracks[0].steps[16], 1.0, "the bar repeats");
     }
 
     #[test]
