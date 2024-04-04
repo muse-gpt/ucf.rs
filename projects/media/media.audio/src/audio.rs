@@ -519,16 +519,17 @@ fn synth_plucks(buf: &mut [f32], volume: f32, sample_rate: u32) {
 
 /// Decodes a PCM16 WAV file and mixes it at the given frame offset.
 ///
-/// A missing or undecodable file keeps the slot silent; a file whose declared
-/// sample rate differs from the plan is an input-contract violation, never an
-/// implicit resample.
+/// A declared narration slot is a contract: a missing file, undecodable bytes
+/// or a foreign sample rate are all explicit errors. "This film has no
+/// narration" is expressed by omitting the slot, never by a broken file.
 fn mix_wav(buf: &mut [f32], path: &str, delay_frames: u32, volume: f32, plan: &AudioPlan) -> Result<(), Error> {
-    let Ok(bytes) = std::fs::read(path) else {
-        // The narration slot is optional input; a missing file stays silent.
-        return Ok(());
-    };
+    let bytes = std::fs::read(path).map_err(|error| {
+        Error::invalid_input(format!("narration `{path}` cannot be read: {error}"))
+    })?;
     let Some(wav) = parse_wav_pcm16(&bytes) else {
-        return Ok(());
+        return Err(Error::invalid_input(format!(
+            "narration `{path}` is not a decodable PCM16 WAV"
+        )));
     };
     if wav.sample_rate != plan.sample_rate {
         return Err(Error::invalid_input(format!(

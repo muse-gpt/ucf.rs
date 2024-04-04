@@ -48,6 +48,12 @@ impl Error {
         Self { code: "unsupported_platform", message: message.into() }
     }
 
+    /// The host asked for the running task to stop; no output is published.
+    #[must_use]
+    pub fn cancelled(message: impl Into<String>) -> Self {
+        Self { code: "cancelled", message: message.into() }
+    }
+
     /// The stable code for hosts.
     #[must_use]
     pub fn code(&self) -> &'static str {

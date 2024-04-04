@@ -1,7 +1,7 @@
 //! Frame orchestration: compile the scene IR into pixels and push them
 //! through the encoder together with the synthesized audio bed.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use geometry::camera_at;
 use geometry::smooth_polyline;
@@ -23,7 +23,11 @@ use media_types::Error;
 use media_types::hash;
 
 /// Facts about a finished render.
-#[derive(serde::Serialize)]
+///
+/// The stats are the render's provenance: they name the exact frame range,
+/// the font files actually loaded and the hash of the project that produced
+/// the file, so a success can be traced back to its inputs.
+#[derive(serde::Serialize, Debug)]
 pub struct RenderStats {
     pub frames: u32,
     pub width: u32,
@@ -34,47 +38,191 @@ pub struct RenderStats {
     pub bytes: u64,
     pub backend: String,
     pub audio: bool,
+    /// Half-open frame range written, in project frames.
+    pub range: [u32; 2],
+    /// Font files the render actually loaded, in role order.
+    pub fonts: Vec<String>,
+    /// FNV-1a hash of the project JSON that was rendered.
+    pub project_hash: String,
+    /// Declared optional resources that were absent; each is documented silence.
+    pub optional_missing: Vec<String>,
 }
 
-/// System font discovery for the scene film pipeline.
+/// A half-open range of project frames to render.
 ///
-/// This lives at the host-IO boundary on purpose: `media.text` only ever
-/// accepts explicit bytes through `Fonts::from_bytes`, so no domain crate
-/// binds its output to the fonts installed on one machine. The film path
-/// keeps the historical candidate list verbatim.
-fn load_system_fonts() -> Result<Fonts, Error> {
-    const REGULAR: &[&str] = &["C:\\Windows\\Fonts\\msyh.ttc", "C:\\Windows\\Fonts\\NotoSansCJK-Regular.ttc"];
-    const BOLD: &[&str] = &["C:\\Windows\\Fonts\\msyhbd.ttc", "C:\\Windows\\Fonts\\NotoSansCJK-Bold.ttc"];
-    const MONO: &[&str] = &["C:\\Windows\\Fonts\\consola.ttf", "C:\\Windows\\Fonts\\DejaVuSansMono.ttf"];
-    let pick = |paths: &[&str]| -> Result<Vec<u8>, Error> {
-        for p in paths {
-            if let Ok(bytes) = std::fs::read(p) {
-                return Ok(bytes);
+/// Frames are renumbered from zero in the output, so an interval export is a
+/// standalone file that plays from its own start.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameRange {
+    pub start: u32,
+    pub end: u32,
+}
+
+/// Execution options for one render.
+///
+/// `range` selects an interval and `cancel` is polled between frames; both are
+/// explicit so a host never has to guess whether a run can be stopped or
+/// trimmed. The default is the whole film, uncancellable.
+#[derive(Default)]
+pub struct RenderOptions<'a> {
+    pub range: Option<FrameRange>,
+    pub cancel: Option<&'a dyn Fn() -> bool>,
+}
+
+impl RenderOptions<'_> {
+    fn cancelled(&self) -> bool {
+        self.cancel.is_some_and(|poll| poll())
+    }
+}
+
+/// Removes a partially written artifact unless it was published.
+///
+/// Declared before the encoder so it drops *after* it: the writer releases the
+/// file first, then this guard deletes it.
+struct PartialOutput {
+    path: PathBuf,
+    published: bool,
+}
+
+impl PartialOutput {
+    fn new(out: &Path) -> Self {
+        // The encoder picks its container from the extension, so the partial
+        // file keeps `.mp4` and only gains a distinguishing suffix.
+        let name = out.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "out.mp4".to_string());
+        let stem = name.strip_suffix(".mp4").unwrap_or(name.as_str());
+        let path = out.with_file_name(format!("{stem}.{}.partial.mp4", std::process::id()));
+        Self { path, published: false }
+    }
+
+    fn publish(&mut self, out: &Path) -> Result<(), Error> {
+        std::fs::rename(&self.path, out)
+            .map_err(|e| Error::io(format!("cannot publish {} -> {}: {e}", self.path.display(), out.display())))?;
+        self.published = true;
+        Ok(())
+    }
+}
+
+impl Drop for PartialOutput {
+    fn drop(&mut self) {
+        if self.published {
+            return;
+        }
+        // The sink writer may still be releasing the file when this runs, so
+        // removal is retried briefly instead of silently leaving a stray file.
+        for attempt in 0..12 {
+            match std::fs::remove_file(&self.path) {
+                Ok(()) => return,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(10 * (attempt + 1))),
             }
         }
-        Err(Error::io(format!("no font found among: {}", paths.join(", "))))
+    }
+}
+
+/// The system font candidates, per role. A project that declares `fonts` never
+/// reaches this list.
+const SYSTEM_FONTS: [(&str, &[&str]); 3] = [
+    ("regular", &["C:\\Windows\\Fonts\\msyh.ttc", "C:\\Windows\\Fonts\\NotoSansCJK-Regular.ttc"]),
+    ("bold", &["C:\\Windows\\Fonts\\msyhbd.ttc", "C:\\Windows\\Fonts\\NotoSansCJK-Bold.ttc"]),
+    ("mono", &["C:\\Windows\\Fonts\\consola.ttf", "C:\\Windows\\Fonts\\DejaVuSansMono.ttf"]),
+];
+
+/// Loads the three faces and returns the paths that were used.
+///
+/// Declared project fonts are an input contract: a missing or undecodable file
+/// is an error, never a silent swap to another face. Without a declaration the
+/// host probes the system candidates and still reports which files it loaded.
+fn resolve_fonts(project: &Project) -> Result<(Fonts, Vec<String>), Error> {
+    let (bytes, used) = match &project.fonts {
+        Some(spec) => {
+            let mut bytes = Vec::with_capacity(3);
+            let mut used = Vec::with_capacity(3);
+            for (role, path) in spec.faces() {
+                let data = std::fs::read(path)
+                    .map_err(|e| Error::io(format!("project font `{role}` at {path} cannot be read: {e}")))?;
+                bytes.push(data);
+                used.push(path.to_string());
+            }
+            (bytes, used)
+        }
+        None => {
+            let mut bytes = Vec::with_capacity(3);
+            let mut used = Vec::with_capacity(3);
+            for (role, candidates) in SYSTEM_FONTS {
+                let mut hit = None;
+                for path in candidates {
+                    if let Ok(data) = std::fs::read(path) {
+                        hit = Some((data, *path));
+                        break;
+                    }
+                }
+                let Some((data, path)) = hit else {
+                    return Err(Error::io(format!(
+                        "no {role} font found among: {}; declare `fonts` in the project",
+                        candidates.join(", ")
+                    )));
+                };
+                bytes.push(data);
+                used.push(path.to_string());
+            }
+            (bytes, used)
+        }
     };
-    Fonts::from_bytes(&pick(REGULAR)?, &pick(BOLD)?, &pick(MONO)?)
+    let fonts = Fonts::from_bytes(&bytes[0], &bytes[1], &bytes[2])?;
+    Ok((fonts, used))
+}
+
+fn fnv1a(bytes: &[u8]) -> String {
+    let mut state = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        state ^= u64::from(*byte);
+        state = state.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{state:016x}")
 }
 
 /// Parses, validates and renders a project JSON string into `out`.
 pub fn render_project(json: &str, out: &Path, progress: &mut dyn FnMut(u32, u32)) -> Result<RenderStats, Error> {
+    render_project_with(json, out, &RenderOptions::default(), progress)
+}
+
+/// Renders `out` with explicit range and cancellation.
+///
+/// The artifact is written to a sibling partial file and renamed only after the
+/// encoder closes cleanly, so a cancelled or failed run never replaces the last
+/// good output.
+pub fn render_project_with(
+    json: &str,
+    out: &Path,
+    options: &RenderOptions<'_>,
+    progress: &mut dyn FnMut(u32, u32),
+) -> Result<RenderStats, Error> {
     let project: Project = serde_json::from_str(json).map_err(|e| Error::invalid(format!("project json: {e}")))?;
     validate(&project)?;
-    let mut fonts = load_system_fonts()?;
+    let (w, h, fps) = (project.width, project.height, project.fps);
+    let (fonts, font_paths) = resolve_fonts(&project)?;
+    let mut fonts = fonts;
     let mut media = MediaLibrary::new();
     // The project layer's decode budget: this renderer trusts container sizes,
     // hosts with tighter budgets pass their own limits to the codec calls.
     let limits = DecodeLimits::unbounded();
-    let (w, h, fps) = (project.width, project.height, project.fps);
+    let range = resolve_range(&project, options)?;
+    let (first, last) = (range.start, range.end);
     // 暗角唯一正式语义：`media.post::Vignette`（G7 裁决，旧 raster 掩码已删）。
-    let vignette = Vignette::new(0.55);
+    // 强度完全来自 `project.post`；未声明就是不压暗。
+    let vignette = project.post.vignette.map(Vignette::new);
     let seconds = project.time_base().to_seconds(project.duration_frames);
     let has_audio = project.audio.is_some();
     let plan = lower_audio(&project);
+    let optional_missing = preflight(&project, &mut fonts, &mut media, limits, &plan)?;
     let audio = build_audio(&plan, &mut media, limits)?;
     let bitrate = (w * h * fps / 2).clamp(2_000_000, 20_000_000);
-    let mut encoder = Encoder::open(out, w, h, fps, bitrate, plan.sample_rate, has_audio)?;
+    let mut partial = PartialOutput::new(out);
+    if let Some(parent) = partial.path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::io(format!("cannot create output directory {}: {e}", parent.display())))?;
+    }
+    let mut encoder = Encoder::open(&partial.path, w, h, fps, bitrate, plan.sample_rate, has_audio)?;
     let audio_codec = encoder.audio_codec().to_string();
 
     let mut frame = Frame::new(w, h);
@@ -82,24 +230,29 @@ pub fn render_project(json: &str, out: &Path, progress: &mut dyn FnMut(u32, u32)
     // full-resolution detail instead of a blown-up 1:1 frame.
     let ss = supersample(&project);
     let mut scratch = Frame::new((w as f32 * ss).round() as u32, (h as f32 * ss).round() as u32);
-    let total = project.duration_frames;
+    let total = last - first;
     let mut written_samples = 0usize;
-    for f in 0..total {
-        paint_frame(&project, &mut fonts, &mut media, &vignette, &mut scratch, f, &mut frame, limits);
-        encoder.write_video(&frame.to_nv12(), f, fps)?;
+    for f in first..last {
+        if options.cancelled() {
+            return Err(Error::cancelled(format!("render cancelled at frame {f} of {first}..{last}")));
+        }
+        paint_frame(&project, &mut fonts, &mut media, vignette.as_ref(), &mut scratch, f, &mut frame, limits)?;
+        encoder.write_video(&frame.to_nv12(), f - first, fps)?;
         // Interleave audio with video in one-second blocks.
-        if (f + 1) % fps == 0 || f + 1 == total {
+        if (f + 1 - first) % fps == 0 || f + 1 == last {
             let end_samples = project.time_base().to_samples(f + 1, plan.sample_rate);
-            let end_samples = end_samples.min(audio.len() / 2);
-            if end_samples > written_samples {
-                let chunk = &audio[written_samples * 2..end_samples * 2];
+            let start_samples = project.time_base().to_samples(first, plan.sample_rate);
+            let end_samples = end_samples.min(audio.len() / 2).max(start_samples);
+            if end_samples > written_samples + start_samples {
+                let chunk = &audio[(written_samples + start_samples) * 2..end_samples * 2];
                 encoder.write_audio(chunk, written_samples as u64)?;
-                written_samples = end_samples;
+                written_samples = end_samples - start_samples;
             }
         }
-        progress(f + 1, total);
+        progress(f + 1 - first, total);
     }
     encoder.finish()?;
+    partial.publish(out)?;
     let bytes = std::fs::metadata(out).map(|m| m.len()).unwrap_or(0);
     Ok(RenderStats {
         frames: total,
@@ -111,7 +264,28 @@ pub fn render_project(json: &str, out: &Path, progress: &mut dyn FnMut(u32, u32)
         bytes,
         backend: if has_audio { format!("media-foundation+h264+{audio_codec}") } else { "media-foundation+h264".to_string() },
         audio: has_audio,
+        range: [first, last],
+        fonts: font_paths,
+        project_hash: fnv1a(json.as_bytes()),
+        optional_missing,
     })
+}
+
+/// Validates the requested interval against the film.
+fn resolve_range(project: &Project, options: &RenderOptions<'_>) -> Result<FrameRange, Error> {
+    let Some(range) = options.range else {
+        return Ok(FrameRange { start: 0, end: project.duration_frames });
+    };
+    if range.start >= range.end {
+        return Err(Error::invalid(format!("frame range {range:?} is empty (start must be below end)")));
+    }
+    if range.end > project.duration_frames {
+        return Err(Error::invalid(format!(
+            "frame range ends at {} but the film is {} frames",
+            range.end, project.duration_frames
+        )));
+    }
+    Ok(range)
 }
 
 /// Lowers the scene's `AudioSpec` into the mixer's neutral track plan.
@@ -224,8 +398,8 @@ pub fn lower_audio(project: &Project) -> AudioPlan {
                         volume: c.volume,
                         fade_in_frames: 0,
                         fade_out_frames: 0,
-                        // Scene beds are reserved slots: documented silence.
-                        required: false,
+                        // Imported audio is a required input unless declared optional.
+                        required: c.required,
                     })
                     .collect()
             })
@@ -261,27 +435,292 @@ fn validate(project: &Project) -> Result<(), Error> {
     if project.duration_frames == 0 {
         return Err(Error::invalid("duration_frames must be positive"));
     }
-    for scene in &project.scenes {
+    if let Some(vignette) = project.post.vignette {
+        if !vignette.is_finite() || !(0.0..=1.0).contains(&vignette) {
+            return Err(Error::invalid(format!("post.vignette must be within 0..=1, got {vignette}")));
+        }
+    }
+    let mut problems = Vec::new();
+    for (index, scene) in project.scenes.iter().enumerate() {
         if scene.duration == 0 {
             return Err(Error::invalid("scene duration must be positive"));
         }
         if scene.start + scene.duration > project.duration_frames {
             return Err(Error::invalid(format!("scene at {} exceeds duration {}", scene.start, project.duration_frames)));
         }
+        check_background(index, &scene.background, &mut problems);
+        for (slot, item) in scene.items.iter().enumerate() {
+            check_item_colors(&format!("scene {index} item {slot}"), item, &mut problems);
+        }
     }
-    Ok(())
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(Error::invalid(format!("scene contract: {}", problems.join("; "))))
+    }
 }
 
+/// Every declared color must parse. A silent fallback would repaint the film
+/// in a color the author never wrote.
+fn check_color(where_: &str, value: Option<&str>, problems: &mut Vec<String>) {
+    if let Some(value) = value {
+        if parse(value).is_none() {
+            problems.push(format!("{where_}: `{value}` is not a #rgb/#rrggbb/#rrggbbaa color"));
+        }
+    }
+}
+
+fn check_background(index: usize, background: &Background, problems: &mut Vec<String>) {
+    let where_ = format!("scene {index} background");
+    match background {
+        Background::Solid { color } => check_color(&where_, Some(color), problems),
+        Background::VGradient { colors } => {
+            if colors.is_empty() {
+                problems.push(format!("{where_}: a vertical gradient needs at least one stop"));
+            }
+            for color in colors {
+                check_color(&where_, Some(color), problems);
+            }
+        }
+        Background::Radial { center, edge } => {
+            check_color(&where_, Some(center), problems);
+            check_color(&where_, Some(edge), problems);
+        }
+        Background::Starfield { base, tint, .. } => {
+            if base.is_empty() {
+                problems.push(format!("{where_}: a starfield needs at least one base color"));
+            }
+            for color in base {
+                check_color(&where_, Some(color), problems);
+            }
+            check_color(&where_, tint.as_deref(), problems);
+        }
+    }
+}
+
+fn check_item_colors(where_: &str, item: &Item, problems: &mut Vec<String>) {
+    match item {
+        Item::Text { dur, color, sub_color, glow, .. } => {
+            check_dur(where_, *dur, problems);
+            check_color(where_, Some(color), problems);
+            check_color(where_, sub_color.as_deref(), problems);
+            check_color(where_, glow.as_deref(), problems);
+        }
+        Item::Code { dur, theme, .. } => {
+            check_dur(where_, *dur, problems);
+            for field in [&theme.plain, &theme.keyword, &theme.string, &theme.comment, &theme.number, &theme.function] {
+                check_color(where_, Some(field), problems);
+            }
+            check_color(where_, theme.panel.as_deref(), problems);
+        }
+        Item::Counter { dur, color, .. } => {
+            check_dur(where_, *dur, problems);
+            check_color(where_, Some(color), problems);
+        }
+        Item::Card { dur, accent, panel, .. } => {
+            check_dur(where_, *dur, problems);
+            check_color(where_, accent.as_deref(), problems);
+            check_color(where_, panel.as_deref(), problems);
+        }
+        Item::Image { dur, .. } | Item::Video { dur, .. } => check_dur(where_, *dur, problems),
+        Item::Shape { dur, color, .. } => {
+            check_dur(where_, *dur, problems);
+            check_color(where_, Some(color), problems);
+        }
+        Item::Bands { dur, color, .. } => {
+            check_dur(where_, *dur, problems);
+            check_color(where_, Some(color), problems);
+        }
+        Item::Grain { dur, .. } => check_dur(where_, *dur, problems),
+        Item::Path { dur, fill, color, .. } => {
+            check_dur(where_, *dur, problems);
+            check_color(where_, fill.as_deref(), problems);
+            check_color(where_, Some(color), problems);
+        }
+        Item::Glow { dur, color, .. } => {
+            check_dur(where_, *dur, problems);
+            check_color(where_, Some(color), problems);
+        }
+        Item::Layer { dur, items, .. } => {
+            check_dur(where_, *dur, problems);
+            for (slot, child) in items.iter().enumerate() {
+                check_item_colors(&format!("{where_} layer item {slot}"), child, problems);
+            }
+        }
+        Item::Footnote { dur, color, .. } => {
+            check_dur(where_, *dur, problems);
+            check_color(where_, Some(color), problems);
+        }
+        Item::Progress { dur, track, fill, .. } => {
+            check_dur(where_, *dur, problems);
+            check_color(where_, track.as_deref(), problems);
+            check_color(where_, fill.as_deref(), problems);
+        }
+    }
+}
+
+fn check_dur(where_: &str, dur: u32, problems: &mut Vec<String>) {
+    if dur == 0 {
+        problems.push(format!("{where_}: dur must be at least one frame"));
+    }
+}
+
+/// Preflights every imported resource before a frame is encoded.
+///
+/// Required resources must exist and decode; optional ones are recorded by name
+/// so the finished stats state exactly which declared slots stayed silent.
+/// Text is checked against the loaded faces, so a missing glyph fails here
+/// instead of rendering as a blank box.
+fn preflight(
+    project: &Project,
+    fonts: &mut Fonts,
+    media: &mut MediaLibrary,
+    limits: DecodeLimits,
+    plan: &AudioPlan,
+) -> Result<Vec<String>, Error> {
+    let mut failures: Vec<String> = Vec::new();
+    let mut optional_missing: Vec<String> = Vec::new();
+    let mut decode_failed = false;
+    for (index, scene) in project.scenes.iter().enumerate() {
+        for (slot, item) in scene.items.iter().enumerate() {
+            let where_ = format!("scene {index} item {slot}");
+            preflight_item(project, &where_, item, fonts, media, limits, &mut failures, &mut optional_missing, &mut decode_failed);
+        }
+    }
+    // The narration slot is a contract: it was lowered, so it must exist.
+    if let Some(narration) = &plan.narration {
+        match std::fs::read(&narration.wav).ok().and_then(|bytes| media_codec::parse_wav_pcm16(&bytes)) {
+            Some(wav) if wav.sample_rate == plan.sample_rate => {}
+            Some(wav) => failures.push(format!(
+                "narration `{}` is {} Hz but the film is {} Hz",
+                narration.wav, wav.sample_rate, plan.sample_rate
+            )),
+            None => {
+                decode_failed = true;
+                failures.push(format!("narration `{}` is missing or not a PCM16 WAV", narration.wav));
+            }
+        }
+    }
+    for clip in &plan.clips {
+        match media.audio_pcm(&clip.src, plan.sample_rate, limits) {
+            Ok(_) => {}
+            Err(error) if clip.required => {
+                decode_failed = true;
+                failures.push(format!("required audio clip `{}`: {error}", clip.src));
+            }
+            Err(_) => optional_missing.push(clip.src.clone()),
+        }
+    }
+    if failures.is_empty() {
+        Ok(optional_missing)
+    } else {
+        let message = format!("resource preflight failed: {}", failures.join("; "));
+        Err(if decode_failed { Error::media(message) } else { Error::invalid(message) })
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn preflight_item(
+    project: &Project,
+    where_: &str,
+    item: &Item,
+    fonts: &mut Fonts,
+    media: &mut MediaLibrary,
+    limits: DecodeLimits,
+    failures: &mut Vec<String>,
+    optional_missing: &mut Vec<String>,
+    decode_failed: &mut bool,
+) {
+    match item {
+        Item::Image { src, required, .. } => match media.image(src, limits) {
+            Ok(_) => {}
+            Err(error) if *required => {
+                *decode_failed = true;
+                failures.push(format!("{where_} image `{src}`: {error}"));
+            }
+            Err(_) => optional_missing.push(src.clone()),
+        },
+        Item::Video { src, src_in, required, .. } => {
+            let seconds = project.time_base().to_seconds(*src_in);
+            match media.video_frame(src, seconds, limits) {
+                Ok(_) => {}
+                Err(error) if *required => {
+                    *decode_failed = true;
+                    failures.push(format!("{where_} video `{src}`: {error}"));
+                }
+                Err(_) => optional_missing.push(src.clone()),
+            }
+        }
+        Item::Layer { items, .. } => {
+            for (slot, child) in items.iter().enumerate() {
+                preflight_item(
+                    project,
+                    &format!("{where_} layer item {slot}"),
+                    child,
+                    fonts,
+                    media,
+                    limits,
+                    failures,
+                    optional_missing,
+                    decode_failed,
+                );
+            }
+        }
+        _ => {}
+    }
+    for (mono, text) in item_texts(item) {
+        let missing: Vec<char> = text.chars().filter(|ch| !ch.is_whitespace() && !fonts.covers(*ch, mono)).collect();
+        if !missing.is_empty() {
+            let listed: String = missing.iter().take(12).collect();
+            failures.push(format!("{where_}: no glyph for `{listed}` in the loaded fonts"));
+        }
+    }
+}
+
+/// Every string the item draws, tagged with whether it uses the code face.
+fn item_texts(item: &Item) -> Vec<(bool, String)> {
+    let mut out = Vec::new();
+    match item {
+        Item::Text { content, sub, .. } => {
+            out.push((false, content.clone()));
+            if let Some(sub) = sub {
+                out.push((false, sub.clone()));
+            }
+        }
+        Item::Code { lines, .. } => out.extend(lines.iter().map(|line| (true, line.clone()))),
+        Item::Counter { prefix, suffix, .. } => {
+            for part in [prefix, suffix].into_iter().flatten() {
+                out.push((false, part.clone()));
+            }
+        }
+        Item::Card { title, body, .. } => {
+            out.push((false, title.clone()));
+            if let Some(body) = body {
+                out.push((false, body.clone()));
+            }
+        }
+        Item::Footnote { text, .. } => out.push((false, text.clone())),
+        Item::Layer { items, .. } => {
+            for child in items {
+                out.extend(item_texts(child));
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
 fn paint_frame(
     project: &Project,
     fonts: &mut Fonts,
     media: &mut MediaLibrary,
-    vignette: &Vignette,
+    vignette: Option<&Vignette>,
     scratch: &mut Frame,
     frame_index: u32,
     out: &mut Frame,
     limits: DecodeLimits,
-) {
+) -> Result<(), Error> {
     out.fill(Rgba([0, 0, 0, 255]));
     // A global curve gives one continuous move for the whole film; a scene
     // camera is a per-block move used when no global curve is declared.
@@ -306,7 +745,7 @@ fn paint_frame(
         // camera still has real pixels to show instead of an upscale.
         paint_background(target, &scene.background, seconds);
         for item in &scene.items {
-            paint_item(project, fonts, media, target, item, local, frame_index, seconds, global_zoom, 1.0, limits);
+            paint_item(project, fonts, media, target, item, local, frame_index, seconds, global_zoom, 1.0, limits)?;
         }
         if global {
             // `zoom` is normalized to the whole world buffer, so the buffer's
@@ -324,7 +763,12 @@ fn paint_frame(
             out.resample_from(scratch, zoom, focus, camera.rotate_to * eased);
         }
     }
-    vignette.apply(out);
+    // Corner darkening is an authored look, not a house style: no declaration,
+    // no darkening.
+    if let Some(vignette) = vignette {
+        vignette.apply(out);
+    }
+    Ok(())
 }
 
 fn paint_background(frame: &mut Frame, bg: &Background, seconds: f32) {
@@ -358,6 +802,7 @@ fn px(x: f32, w: u32) -> f32 {
     x * w as f32
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_item(
     project: &Project,
     fonts: &mut Fonts,
@@ -370,7 +815,7 @@ fn paint_item(
     zoom: f32,
     alpha_mul: f32,
     limits: DecodeLimits,
-) {
+) -> Result<(), Error> {
     // Layout lives in output-relative units. When the world is rasterized
     // supersampled for a camera push, every pixel measure scales with it.
     let (fw, fh) = (frame.width as f32, frame.height as f32);
@@ -401,12 +846,12 @@ fn paint_item(
             clip,
         } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let alpha = fade(life, *dur, *fade_in, *fade_out) * alpha_mul;
             if alpha <= 0.001 {
-                return;
+                return Ok(());
             }
             let drift = *drift_y * s * (1.0 - alpha);
             let size = *size * s;
@@ -475,12 +920,12 @@ fn paint_item(
         }
         Item::Code { at, dur, lines, x, y, size, theme, fade_in, fade_out, typing, line_height } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let alpha = fade(life, *dur, *fade_in, *fade_out) * alpha_mul;
             if alpha <= 0.001 {
-                return;
+                return Ok(());
             }
             let lh = line_height.unwrap_or(1.5);
             let size = *size * s;
@@ -542,12 +987,12 @@ fn paint_item(
         }
         Item::Counter { at, dur, from, to, x, y, size, color, prefix, suffix, decimals, ease, fade_in, fade_out } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let alpha = fade(life, *dur, *fade_in, *fade_out) * alpha_mul;
             if alpha <= 0.001 {
-                return;
+                return Ok(());
             }
             let span = (*dur - (*dur).min(*fade_in + *fade_out)).max(1);
             let t = apply(*ease, life as f32 / span as f32);
@@ -575,12 +1020,12 @@ fn paint_item(
         }
         Item::Card { at, dur, x, y, w, h, title, body, accent, panel, fade_in, fade_out, drift_y } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let alpha = fade(life, *dur, *fade_in, *fade_out) * alpha_mul;
             if alpha <= 0.001 {
-                return;
+                return Ok(());
             }
             let drift = drift_y * s * (1.0 - alpha);
             let cx = px(*x, fw as u32) - px(*w, fw as u32) / 2.0;
@@ -620,18 +1065,23 @@ fn paint_item(
                 );
             }
         }
-        Item::Image { at, dur, src, x, y, w, h, fit, opacity, radius, fade_in, fade_out } => {
+        Item::Image { at, dur, src, x, y, w, h, fit, opacity, radius, fade_in, fade_out, required } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let alpha = fade(life, *dur, *fade_in, *fade_out) * opacity * alpha_mul;
             if alpha <= 0.001 {
-                return;
+                return Ok(());
             }
-            // A broken import degrades to nothing; rendering the rest still wins.
-            let Ok(bitmap) = media.image(src, limits) else {
-                return;
+            // A required import that fails here aborts the render: preflight
+            // already proved it decodes, so this is a real mid-run failure.
+            let bitmap = match media.image(src, limits) {
+                Ok(bitmap) => bitmap,
+                Err(error) if *required => {
+                    return Err(Error::media(format!("required image `{src}` cannot be decoded: {error}")));
+                }
+                Err(_) => return Ok(()),
             };
             let (bw, bh) = (px(*w, fw as u32), px(*h, fh as u32));
             frame.draw_bitmap(
@@ -645,18 +1095,26 @@ fn paint_item(
                 *radius * s,
             );
         }
-        Item::Video { at, dur, src, src_in, x, y, w, h, fit, opacity, radius, fade_in, fade_out } => {
+        Item::Video { at, dur, src, src_in, x, y, w, h, fit, opacity, radius, fade_in, fade_out, required } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let alpha = fade(life, *dur, *fade_in, *fade_out) * opacity * alpha_mul;
             if alpha <= 0.001 {
-                return;
+                return Ok(());
             }
             let source_seconds = project.time_base().to_seconds(*src_in + life);
-            let Ok(bitmap) = media.video_frame(src, source_seconds, limits) else {
-                return;
+            // Same contract as images: required clips fail loudly, optional
+            // ones are documented silence.
+            let bitmap = match media.video_frame(src, source_seconds, limits) {
+                Ok(bitmap) => bitmap,
+                Err(error) if *required => {
+                    return Err(Error::media(format!(
+                        "required video `{src}` cannot be decoded at {source_seconds:.3}s: {error}"
+                    )));
+                }
+                Err(_) => return Ok(()),
             };
             let (bw, bh) = (px(*w, fw as u32), px(*h, fh as u32));
             frame.draw_bitmap(
@@ -672,12 +1130,12 @@ fn paint_item(
         }
         Item::Shape { at, dur, shape, x, y, w, h, color, radius, stroke, progress, blend, fade_in, fade_out } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let alpha = fade(life, *dur, *fade_in, *fade_out) * alpha_mul;
             if alpha <= 0.001 {
-                return;
+                return Ok(());
             }
             let c = parse_or(Some(color), Rgba([110, 160, 255, 255])).with_alpha(alpha);
             let cx = px(*x, fw as u32);
@@ -713,12 +1171,12 @@ fn paint_item(
         }
         Item::Bands { at, dur, count, angle, speed, color, alpha, thickness, fade_in, fade_out } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let opacity = fade(life, *dur, *fade_in, *fade_out) * alpha * alpha_mul;
             if opacity <= 0.001 {
-                return;
+                return Ok(());
             }
             let c = parse_or(Some(color), Rgba([120, 170, 255, 255])).with_alpha(opacity);
             let height = fh;
@@ -732,12 +1190,12 @@ fn paint_item(
         }
         Item::Grain { at, dur, strength, density, fade_in, fade_out } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let opacity = fade(life, *dur, *fade_in, *fade_out) * alpha_mul;
             if opacity <= 0.001 {
-                return;
+                return Ok(());
             }
             frame.grain((*density as f32 * s * s) as u32, strength * opacity, frame_index.wrapping_add(1));
         }
@@ -758,12 +1216,12 @@ fn paint_item(
             fade_out,
         } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let alpha = fade(life, *dur, *fade_in, *fade_out) * alpha_mul;
             if alpha <= 0.001 {
-                return;
+                return Ok(());
             }
             let to_pixels = |list: &[[f32; 2]]| -> Vec<[f32; 2]> { list.iter().map(|p| [p[0] * fw, p[1] * fh]).collect() };
             let mut shape = if *smooth { smooth_polyline(points, *closed, 12) } else { points.clone() };
@@ -804,26 +1262,26 @@ fn paint_item(
         }
         Item::Glow { at, dur, x, y, radius, color, intensity, fade_in, fade_out } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let alpha = fade(life, *dur, *fade_in, *fade_out) * intensity * alpha_mul;
             if alpha <= 0.001 {
-                return;
+                return Ok(());
             }
             let c = parse_or(Some(color), Rgba([242, 201, 138, 255])).with_alpha(alpha);
             frame.glow(px(*x, fw as u32), px(*y, fh as u32), px(*radius, fw as u32) * s, c);
         }
         Item::Layer { at, dur, zoom_from, zoom_to, edge, items } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             // Layers hand off by zoom instead of by cut: while the camera keeps
             // moving, the layer that no longer owns this scale fades out and the
             // next one fades in. That is what makes a continuous take possible.
             let weight = layer_weight(zoom, *zoom_from, *zoom_to, *edge);
             if weight <= 0.001 {
-                return;
+                return Ok(());
             }
             let local_life = local - *at;
             for child in items {
@@ -839,17 +1297,17 @@ fn paint_item(
                     zoom,
                     alpha_mul * weight,
                     limits,
-                );
+                )?;
             }
         }
         Item::Footnote { at, dur, text, size, x, y, align, color, fade_in, fade_out } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let alpha = fade(life, *dur, *fade_in, *fade_out) * 0.9;
             if alpha <= 0.001 {
-                return;
+                return Ok(());
             }
             let c = parse_or(Some(color), Rgba([93, 111, 140, 255])).with_alpha(alpha);
             fonts.draw_block(
@@ -867,12 +1325,12 @@ fn paint_item(
         }
         Item::Progress { at, dur, track, fill, y } => {
             if local < *at || local >= *at + *dur {
-                return;
+                return Ok(());
             }
             let life = local - *at;
             let alpha = fade(life, *dur, 6, 6) * alpha_mul;
             if alpha <= 0.001 {
-                return;
+                return Ok(());
             }
             let track = parse_or(track.as_deref(), Rgba([40, 52, 78, 255])).with_alpha(alpha * 0.7);
             let fill = parse_or(fill.as_deref(), Rgba([110, 160, 255, 255])).with_alpha(alpha);
@@ -884,6 +1342,7 @@ fn paint_item(
             frame.round_rect(margin, bar_y, full * t, 4.0 * s, 2.0 * s, fill);
         }
     }
+    Ok(())
 }
 
 /// Opacity of a layer at a given camera zoom: 1 inside the window, easing to 0
@@ -1200,5 +1659,205 @@ mod tests {
         assert_eq!(stats.frames, 30);
         assert!(stats.audio);
         assert!(std::fs::metadata(&out).unwrap().len() > 2_000);
+    }
+
+    /// A declared required image that cannot decode stops the render before any
+    /// frame is encoded: a missing picture must never pass as a finished film.
+    #[test]
+    fn missing_required_image_fails_without_publishing() {
+        let dir = std::env::temp_dir().join("opencut-media-tests");
+        let absent = dir.join("definitely-absent-import.png");
+        let out = dir.join("required-image.mp4");
+        let _ = std::fs::remove_file(&out);
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 15,
+            "scenes": [{ "start": 0, "duration": 15,
+                "background": { "kind": "solid", "color": "#05070f" },
+                "items": [{ "kind": "image", "at": 0, "dur": 15, "src": absent.to_str().unwrap(),
+                            "x": 0.5, "y": 0.5, "w": 0.5, "h": 0.5 }] }],
+            "audio": null
+        });
+        let error = super::render_project(&film.to_string(), &out, &mut |_, _| {}).expect_err("missing image must fail");
+        assert_eq!(error.code(), "media", "{error}");
+        assert!(error.message.contains("resource preflight failed"), "{error}");
+        assert!(!out.exists(), "a failed render must not publish an artifact");
+    }
+
+    /// The same absent picture declared optional is documented silence: the
+    /// render succeeds and the stats name the slot that stayed empty.
+    #[test]
+    fn optional_image_stays_silent_and_is_reported() {
+        let dir = std::env::temp_dir().join("opencut-media-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let absent = dir.join("optional-absent.png");
+        let out = dir.join("optional-image.mp4");
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 10,
+            "scenes": [{ "start": 0, "duration": 10,
+                "background": { "kind": "solid", "color": "#05070f" },
+                "items": [{ "kind": "image", "at": 0, "dur": 10, "src": absent.to_str().unwrap(),
+                            "x": 0.5, "y": 0.5, "w": 0.5, "h": 0.5, "required": false }] }],
+            "audio": null
+        });
+        let stats = super::render_project(&film.to_string(), &out, &mut |_, _| {}).expect("optional slot renders");
+        assert_eq!(stats.optional_missing.len(), 1);
+        assert!(stats.optional_missing[0].ends_with("optional-absent.png"));
+        assert!(out.exists());
+    }
+
+    /// Narration is a slot, not a guess: a path that does not decode aborts the
+    /// mix instead of producing a film that quietly has no voice.
+    #[test]
+    fn undecodable_narration_fails() {
+        let dir = std::env::temp_dir().join("opencut-media-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let broken = dir.join("broken-narration.wav");
+        std::fs::write(&broken, b"not a wave file").unwrap();
+        let out = dir.join("narration.mp4");
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 10,
+            "scenes": [],
+            "audio": { "narration": { "wav": broken.to_str().unwrap() } }
+        });
+        let error = super::render_project(&film.to_string(), &out, &mut |_, _| {}).expect_err("broken narration must fail");
+        assert!(error.message.contains("narration"), "{error}");
+        assert!(!out.exists());
+    }
+
+    /// Colors are a contract: an unparseable value is reported, never replaced
+    /// by a default that repaints the film.
+    #[test]
+    fn invalid_color_is_reported_with_its_location() {
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 10,
+            "scenes": [{ "start": 0, "duration": 10,
+                "background": { "kind": "solid", "color": "#05070f" },
+                "items": [{ "kind": "text", "at": 0, "dur": 10, "content": "hi", "size": 20.0,
+                            "color": "tomato", "x": 0.5, "y": 0.5 }] }],
+            "audio": null
+        });
+        let out = std::env::temp_dir().join("opencut-media-tests").join("bad-color.mp4");
+        let error = super::render_project(&film.to_string(), &out, &mut |_, _| {}).expect_err("bad color must fail");
+        assert_eq!(error.code(), "invalid_scene", "{error}");
+        assert!(error.message.contains("scene 0 item 0"), "{error}");
+        assert!(error.message.contains("tomato"), "{error}");
+    }
+
+    /// Zero fades mean "no fade": the first frame already shows the text at full
+    /// opacity instead of the old forced one-frame ramp.
+    #[test]
+    fn zero_fade_in_is_not_forced_to_one_frame() {
+        let render = |fade_in: u32| {
+            let film = serde_json::json!({
+                "width": 64, "height": 64, "fps": 15, "duration_frames": 6,
+                "scenes": [{ "start": 0, "duration": 6,
+                    "background": { "kind": "solid", "color": "#000000" },
+                    "items": [{ "kind": "text", "at": 0, "dur": 6, "content": "OO", "size": 40.0,
+                                "bold": true, "color": "#ffffff", "x": 0.5, "y": 0.4,
+                                "fade_in": fade_in, "fade_out": 0 }] }],
+                "audio": null
+            });
+            let out = std::env::temp_dir().join(format!("opencut-fade-{fade_in}.mp4"));
+            super::render_project(&film.to_string(), &out, &mut |_, _| {}).expect("render");
+            let mut library = media_codec::MediaLibrary::new();
+            let frame = library.video_frame(out.to_str().unwrap(), 0.0, media_codec::DecodeLimits::unbounded()).expect("frame");
+            frame.rgba.chunks(4).map(|p| u32::from(p[0]) + u32::from(p[1]) + u32::from(p[2])).max().unwrap_or(0)
+        };
+        let sharp = render(0);
+        let ramped = render(15);
+        assert!(sharp > 300, "zero fade must paint the text on frame 0, got {sharp}");
+        assert!(ramped < sharp / 3, "a long fade must still start dark: {ramped} vs {sharp}");
+    }
+
+    /// A glyph missing from every loaded face is located and rejected before the
+    /// encoder opens, instead of rendering as a blank box.
+    #[test]
+    fn missing_glyph_fails_preflight() {
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 10,
+            "scenes": [{ "start": 0, "duration": 10,
+                "background": { "kind": "solid", "color": "#000000" },
+                "items": [{ "kind": "text", "at": 0, "dur": 10, "content": "\u{10FFFD}", "size": 20.0,
+                            "color": "#ffffff", "x": 0.5, "y": 0.5 }] }],
+            "audio": null
+        });
+        let out = std::env::temp_dir().join("opencut-media-tests").join("missing-glyph.mp4");
+        let error = super::render_project(&film.to_string(), &out, &mut |_, _| {}).expect_err("missing glyph must fail");
+        assert!(error.message.contains("no glyph"), "{error}");
+        assert!(!out.exists());
+    }
+
+    /// Cancellation stops between frames and leaves the previous good output
+    /// untouched; the partial file never appears under the final name.
+    #[test]
+    fn cancel_keeps_the_previous_output() {
+        let dir = std::env::temp_dir().join("opencut-media-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("cancel.mp4");
+        std::fs::write(&out, b"previous good output").unwrap();
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 60,
+            "scenes": [{ "start": 0, "duration": 60,
+                "background": { "kind": "solid", "color": "#101828" }, "items": [] }],
+            "audio": null
+        });
+        let seen = std::cell::Cell::new(0u32);
+        let stop = || seen.get() >= 15;
+        let options = super::RenderOptions { range: None, cancel: Some(&stop) };
+        let error = super::render_project_with(&film.to_string(), &out, &options, &mut |done, _| seen.set(done))
+            .expect_err("cancel must surface as an error");
+        assert_eq!(error.code(), "cancelled", "{error}");
+        assert_eq!(std::fs::read(&out).unwrap(), b"previous good output");
+        let residue: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| entry.file_name().to_string_lossy().contains(".partial"))
+            .collect();
+        assert!(residue.is_empty(), "a cancelled run must remove its partial file");
+    }
+
+    /// An interval export writes only that range, renumbered from zero.
+    #[test]
+    fn range_export_writes_only_the_interval() {
+        let dir = std::env::temp_dir().join("opencut-media-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("range.mp4");
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 60,
+            "scenes": [{ "start": 0, "duration": 60,
+                "background": { "kind": "solid", "color": "#203040" }, "items": [] }],
+            "audio": null
+        });
+        let options = super::RenderOptions { range: Some(super::FrameRange { start: 15, end: 45 }), cancel: None };
+        let stats = super::render_project_with(&film.to_string(), &out, &options, &mut |_, _| {}).expect("range");
+        assert_eq!(stats.frames, 30);
+        assert_eq!(stats.range, [15, 45]);
+        assert!(out.exists());
+    }
+
+    /// Vignette is opt-in: the same film keeps bright corners unless `post`
+    /// declares a strength.
+    #[test]
+    fn vignette_is_opt_in() {
+        let dir = std::env::temp_dir().join("opencut-media-tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let corner = |post: serde_json::Value, name: &str| {
+            let film = serde_json::json!({
+                "width": 64, "height": 64, "fps": 15, "duration_frames": 4,
+                "scenes": [{ "start": 0, "duration": 4,
+                    "background": { "kind": "solid", "color": "#ffffff" }, "items": [] }],
+                "audio": null,
+                "post": post
+            });
+            let out = dir.join(name);
+            super::render_project(&film.to_string(), &out, &mut |_, _| {}).expect("render");
+            let mut library = media_codec::MediaLibrary::new();
+            let frame = library.video_frame(out.to_str().unwrap(), 0.0, media_codec::DecodeLimits::unbounded()).expect("frame");
+            u32::from(frame.rgba[0])
+        };
+        let plain = corner(serde_json::json!({}), "vignette-off.mp4");
+        let dark = corner(serde_json::json!({ "vignette": 0.9 }), "vignette-on.mp4");
+        assert!(plain > 200, "an undeclared vignette must leave the corner bright: {plain}");
+        assert!(dark < plain, "a declared vignette must darken the corner: {dark} vs {plain}");
     }
 }

@@ -26,6 +26,43 @@ pub struct Project {
     /// continuously, which is what makes a one-take move possible.
     #[serde(default)]
     pub camera: Vec<CameraKey>,
+    /// Visual output controls the author declares explicitly. Every field is
+    /// opt-in: an omitted effect means "off", never a hidden house default.
+    #[serde(default)]
+    pub post: PostSpec,
+    /// Explicit font files. When absent the host discovers fonts itself and
+    /// must report the exact paths it resolved.
+    #[serde(default)]
+    pub fonts: Option<FontsSpec>,
+}
+
+/// Film-level visual output controls.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct PostSpec {
+    /// Corner darkening strength, `0.0..=1.0`. `None` draws none.
+    #[serde(default)]
+    pub vignette: Option<f32>,
+}
+
+/// Explicit font file paths, one per face.
+///
+/// Declaring this removes system-font discovery from the render: a missing or
+/// undecodable file is an error, not a silent fallback to another face.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct FontsSpec {
+    pub regular: String,
+    pub bold: String,
+    pub mono: String,
+}
+
+impl FontsSpec {
+    /// The three faces as `(role, path)` pairs, in declaration order.
+    #[must_use]
+    pub fn faces(&self) -> [(&'static str, &str); 3] {
+        [("regular", self.regular.as_str()), ("bold", self.bold.as_str()), ("mono", self.mono.as_str())]
+    }
 }
 
 impl Project {
@@ -106,14 +143,10 @@ pub enum Background {
 }
 
 impl Default for Background {
+    /// A scene that declares no background paints opaque black. The previous
+    /// starfield default made every film inherit one house look.
     fn default() -> Self {
-        Self::Starfield {
-            base: vec!["#05070f".to_string(), "#0b1226".to_string()],
-            stars: 140,
-            tint: Some("#123a6b".to_string()),
-            drift: 3.0,
-            twinkle: 0.6,
-        }
+        Self::Solid { color: "#000000".to_string() }
     }
 }
 
@@ -523,6 +556,10 @@ pub enum Item {
         fade_in: u32,
         #[serde(default = "default_fade")]
         fade_out: u32,
+        /// A required source must decode; an optional one is a documented
+        /// reserved slot and may stay absent.
+        #[serde(default = "default_required")]
+        required: bool,
     },
     /// A video stream decoded on demand; `src_in` is the first source frame.
     Video {
@@ -545,6 +582,9 @@ pub enum Item {
         fade_in: u32,
         #[serde(default = "default_fade")]
         fade_out: u32,
+        /// See [`Item::Image`]: required sources must decode.
+        #[serde(default = "default_required")]
+        required: bool,
     },
     Progress {
         at: u32,
@@ -608,6 +648,10 @@ pub struct AudioClipSpec {
     pub offset_frames: u32,
     #[serde(default = "default_one")]
     pub volume: f32,
+    /// Imported audio is a required input unless the author declares it as an
+    /// optional reserved slot.
+    #[serde(default = "default_required")]
+    pub required: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -639,6 +683,10 @@ pub struct NarrationSpec {
 
 fn default_one() -> f32 {
     1.0
+}
+
+fn default_required() -> bool {
+    true
 }
 
 /// One synthesized effect placed on the bed.

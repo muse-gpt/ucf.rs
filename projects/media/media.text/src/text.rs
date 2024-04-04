@@ -89,6 +89,20 @@ impl Fonts {
         if id == FontId::Mono && !self.mono.has_glyph(ch) && self.regular.has_glyph(ch) { FontId::Regular } else { id }
     }
 
+    /// Whether the loaded faces can draw `ch` at all.
+    ///
+    /// Hosts use this before rendering so a missing glyph is a located error
+    /// instead of a blank box in a finished film. `mono` asks the code face
+    /// first, matching [`Fonts::resolve`].
+    #[must_use]
+    pub fn covers(&self, ch: char, mono: bool) -> bool {
+        if mono {
+            self.mono.has_glyph(ch) || self.regular.has_glyph(ch)
+        } else {
+            self.regular.has_glyph(ch) || self.bold.has_glyph(ch)
+        }
+    }
+
     fn glyph(&mut self, id: FontId, ch: char, size: f32) -> Glyph {
         let id = self.resolve(id, ch);
         let key = (id, ch, (size * 4.0) as u32);

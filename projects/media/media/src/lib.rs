@@ -58,7 +58,7 @@ pub use media_render::{ExportedPage, FontAssets, LayoutAssets, MediaImages, rend
 #[cfg(feature = "image-pipeline")]
 pub use media_render::{ImageOperation, ProcessedImage, process_image};
 #[cfg(feature = "render")]
-pub use media_render::{RenderStats, render_project};
+pub use media_render::{FrameRange, RenderOptions, RenderStats, render_project, render_project_with};
 #[cfg(feature = "sfx-export")]
 pub use media_render::{write_sfx, write_sfx_catalogue};
 #[cfg(feature = "sfx-export")]
