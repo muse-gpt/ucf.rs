@@ -16,6 +16,7 @@ media-codec = { workspace = true }
 geometry = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 media-scene = { workspace = true, optional = true }
+media-motion = { workspace = true, optional = true }
 media-raster = { workspace = true, optional = true }
 media-text = { workspace = true, optional = true }
 media-audio = { workspace = true, optional = true }
@@ -28,7 +29,7 @@ media-layout = { workspace = true, optional = true }
 
 [features]
 default = ["scene"]
-scene = ["dep:geometry", "dep:serde_json", "dep:media-scene", "dep:media-raster", "dep:media-text", "media-text/blocks", "dep:media-audio", "dep:media-post"]
+scene = ["dep:geometry", "dep:serde_json", "dep:media-scene", "dep:media-motion", "dep:media-raster", "dep:media-text", "media-text/blocks", "dep:media-audio", "dep:media-post"]
 image-pipeline = ["dep:media-post"]
 sfx-export = ["dep:media-synthesis"]
 voice-export = ["dep:media-voice"]

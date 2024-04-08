@@ -28,7 +28,7 @@
 pub mod render;
 
 #[cfg(feature = "scene")]
-pub use render::{FrameRange, RenderOptions, RenderStats, lower_audio, render_project, render_project_with};
+pub use render::{FrameRange, PreviewStats, RenderOptions, RenderStats, lower_audio, preview_frame, render_project, render_project_with};
 
 #[cfg(feature = "sfx-export")]
 pub mod sfx;

@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 // Camera keyframes, easing and sampling live in the geometry library: a camera
 // is a geometry pose plus a curve, and both are shared with downstream hosts.
 pub use geometry::{CameraKey, CameraPose, Ease, camera_at};
+// Animation evaluation (identity, tracks, time windows, path following) is the
+// neutral `media.motion` core; the scene IR only carries the authored shape.
+pub use media_motion::{Animated, Follow, Key, LoopMode, NodeId, TimeWindow, Track};
 
 /// A complete renderable project.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -20,6 +23,10 @@ pub struct Project {
     pub fps: u32,
     pub duration_frames: u32,
     pub scenes: Vec<Scene>,
+    /// Reusable element definitions. Instances reference these by id, so one
+    /// revision updates every placement instead of every copy.
+    #[serde(default)]
+    pub components: Vec<Component>,
     #[serde(default)]
     pub audio: Option<AudioSpec>,
     /// One camera curve for the whole film. When present it drives every frame
@@ -75,6 +82,40 @@ impl Project {
     }
 }
 
+/// One node: an item plus the identity and motion authored on it.
+///
+/// The item is flattened, so wire JSON keeps the historical shape
+/// (`{ "kind": "text", … }`) and only gains optional `id` and `anim` keys. That
+/// keeps existing films valid while giving every node a stable name a revision
+/// or a lock can point at.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Node {
+    /// Stable identity. Optional for legacy wire data, required by anything
+    /// that references the node (instances, locks, review notes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<NodeId>,
+    /// Motion declared on this node, in the node's local frames.
+    #[serde(default, skip_serializing_if = "Animated::is_empty")]
+    pub anim: Animated,
+    #[serde(flatten)]
+    pub item: Item,
+}
+
+impl Node {
+    /// Wraps an item as a node with no identity or motion.
+    pub fn plain(item: Item) -> Self {
+        Self { id: None, anim: Animated::default(), item }
+    }
+}
+
+/// A reusable element: a named list of nodes that instances place by id.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Component {
+    pub id: NodeId,
+    /// Nodes in paint order, timed in the component's own local frames.
+    pub items: Vec<Node>,
+}
+
 /// One temporal block with a background and its items.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Scene {
@@ -83,7 +124,7 @@ pub struct Scene {
     #[serde(default)]
     pub background: Background,
     #[serde(default)]
-    pub items: Vec<Item>,
+    pub items: Vec<Node>,
     /// Camera move for this scene: content renders off-screen, then this
     /// transform pushes/pulls and pans it into the output frame.
     #[serde(default)]
@@ -499,7 +540,33 @@ pub enum Item {
         #[serde(default = "default_layer_edge")]
         edge: f32,
         #[serde(default)]
-        items: Vec<Item>,
+        items: Vec<Node>,
+    },
+    /// One placement of a reusable component, drawn into a layout box.
+    ///
+    /// The component is painted on its own and then placed like an image, so an
+    /// instance is a real reuse boundary instead of a copy of the definition.
+    Instance {
+        at: u32,
+        dur: u32,
+        /// Id of an entry in [`Project::components`].
+        component: NodeId,
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        #[serde(default)]
+        fit: Fit,
+        #[serde(default = "default_one")]
+        opacity: f32,
+        #[serde(default = "default_fade")]
+        fade_in: u32,
+        #[serde(default = "default_fade")]
+        fade_out: u32,
+        /// See [`Item::Image`]: required sources must decode, and a missing
+        /// component is always an error.
+        #[serde(default = "default_required")]
+        required: bool,
     },
     /// A soft additive light source. Additive falloff reads as light in air,
     /// which a flat disc never does.

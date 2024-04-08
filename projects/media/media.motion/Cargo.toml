@@ -1,0 +1,14 @@
+[package]
+name = "media-motion"
+description = "Animation evaluation core: stable node identity, property tracks, time windows and path following"
+readme = "readme.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+geometry = { workspace = true }
+media-types = { workspace = true }

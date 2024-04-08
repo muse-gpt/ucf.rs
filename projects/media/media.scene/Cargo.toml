@@ -12,5 +12,6 @@ publish.workspace = true
 serde = { workspace = true }
 geometry = { workspace = true }
 media-image = { workspace = true }
+media-motion = { workspace = true }
 media-types = { workspace = true }
 media-voice = { workspace = true }

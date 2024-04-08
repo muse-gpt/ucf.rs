@@ -14,10 +14,11 @@ use media_audio::{
 use media_codec::DecodeLimits;
 use media_codec::Encoder;
 use media_codec::MediaLibrary;
-use media_image::Frame;
+use media_image::{Bitmap, Frame};
+use media_motion::Motion;
 use media_post::Vignette;
 use media_raster::Paint;
-use media_scene::{Align, Background, Blend, Item, Project, ShapeKind};
+use media_scene::{Align, Background, Blend, Component, Item, Node, Project, ShapeKind};
 use media_text::Fonts;
 use media_types::Error;
 use media_types::hash;
@@ -229,14 +230,14 @@ pub fn render_project_with(
     // Rasterize the world at the largest zoom the film uses, so a push-in has
     // full-resolution detail instead of a blown-up 1:1 frame.
     let ss = supersample(&project);
-    let mut scratch = Frame::new((w as f32 * ss).round() as u32, (h as f32 * ss).round() as u32);
+    let mut pool = FramePool::new((w as f32 * ss).round() as u32, (h as f32 * ss).round() as u32);
     let total = last - first;
     let mut written_samples = 0usize;
     for f in first..last {
         if options.cancelled() {
             return Err(Error::cancelled(format!("render cancelled at frame {f} of {first}..{last}")));
         }
-        paint_frame(&project, &mut fonts, &mut media, vignette.as_ref(), &mut scratch, f, &mut frame, limits)?;
+        paint_frame(&project, &mut fonts, &mut media, vignette.as_ref(), &mut pool, f, &mut frame, limits)?;
         encoder.write_video(&frame.to_nv12(), f - first, fps)?;
         // Interleave audio with video in one-second blocks.
         if (f + 1 - first) % fps == 0 || f + 1 == last {
@@ -268,6 +269,54 @@ pub fn render_project_with(
         fonts: font_paths,
         project_hash: fnv1a(json.as_bytes()),
         optional_missing,
+    })
+}
+
+/// Facts about one previewed frame.
+#[derive(serde::Serialize, Debug)]
+pub struct PreviewStats {
+    pub frame: u32,
+    pub width: u32,
+    pub height: u32,
+    /// Font files the preview loaded, in role order.
+    pub fonts: Vec<String>,
+    pub project_hash: String,
+}
+
+/// Evaluates one project frame and writes it as a PNG.
+///
+/// This is the preview path. It resolves fonts, runs the same contract checks
+/// and paints through the same [`paint_frame`] as an export, so reviewing frame
+/// 137 is reviewing the frame the encoder will receive. It does not synthesize
+/// the audio bed: the preview is a picture.
+pub fn preview_frame(json: &str, frame: u32, out: &Path) -> Result<PreviewStats, Error> {
+    let project: Project = serde_json::from_str(json).map_err(|e| Error::invalid(format!("project json: {e}")))?;
+    validate(&project)?;
+    if frame >= project.duration_frames {
+        return Err(Error::invalid(format!("frame {frame} is outside 0..{}", project.duration_frames)));
+    }
+    let (fonts, font_paths) = resolve_fonts(&project)?;
+    let mut fonts = fonts;
+    let mut media = MediaLibrary::new();
+    let limits = DecodeLimits::unbounded();
+    let plan = lower_audio(&project);
+    preflight(&project, &mut fonts, &mut media, limits, &plan)?;
+    let (w, h) = (project.width, project.height);
+    let ss = supersample(&project);
+    let mut pool = FramePool::new((w as f32 * ss).round() as u32, (h as f32 * ss).round() as u32);
+    let mut frame_buffer = Frame::new(w, h);
+    let vignette = project.post.vignette.map(Vignette::new);
+    paint_frame(&project, &mut fonts, &mut media, vignette.as_ref(), &mut pool, frame, &mut frame_buffer, limits)?;
+    if let Some(parent) = out.parent().filter(|p| !p.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|e| Error::io(format!("cannot create {}: {e}", parent.display())))?;
+    }
+    media_codec::write_png(out, w, h, &frame_buffer.pixels)?;
+    Ok(PreviewStats {
+        frame,
+        width: w,
+        height: h,
+        fonts: font_paths,
+        project_hash: fnv1a(json.as_bytes()),
     })
 }
 
@@ -449,15 +498,113 @@ fn validate(project: &Project) -> Result<(), Error> {
             return Err(Error::invalid(format!("scene at {} exceeds duration {}", scene.start, project.duration_frames)));
         }
         check_background(index, &scene.background, &mut problems);
-        for (slot, item) in scene.items.iter().enumerate() {
-            check_item_colors(&format!("scene {index} item {slot}"), item, &mut problems);
+        for (slot, node) in scene.items.iter().enumerate() {
+            let where_ = format!("scene {index} item {slot}");
+            check_node(project, &where_, node, &mut problems);
         }
+    }
+    for (index, component) in project.components.iter().enumerate() {
+        let where_ = format!("component {index} `{}`", component.id);
+        for (slot, node) in component.items.iter().enumerate() {
+            check_node(project, &format!("{where_} item {slot}"), node, &mut problems);
+        }
+    }
+    for problem in component_cycles(project) {
+        problems.push(problem);
     }
     if problems.is_empty() {
         Ok(())
     } else {
         Err(Error::invalid(format!("scene contract: {}", problems.join("; "))))
     }
+}
+
+/// Validates one node: its identity, its motion contract and its item.
+fn check_node(project: &Project, where_: &str, node: &Node, problems: &mut Vec<String>) {
+    check_item_colors(where_, &node.item, problems);
+    node.anim.validate(where_, problems);
+    // Motion properties are part of the node contract, so a property the item
+    // cannot express is a located error instead of a silently ignored track.
+    let (supports_position, supports_progress) = match &node.item {
+        Item::Bands { .. } | Item::Grain { .. } | Item::Layer { .. } => (false, false),
+        Item::Path { .. } => (true, true),
+        Item::Shape { shape, .. } => (true, *shape == ShapeKind::Line),
+        _ => (true, false),
+    };
+    if !supports_position && (node.anim.x.is_some() || node.anim.y.is_some()) {
+        problems.push(format!("{where_}: this item has no position, so `x`/`y` motion does not apply"));
+    }
+    if !supports_progress && (node.anim.progress.is_some() || node.anim.follow.is_some()) {
+        problems.push(format!("{where_}: this item has no progress, so `progress`/`follow` motion does not apply"));
+    }
+    if let Item::Layer { items, .. } = &node.item {
+        for (slot, child) in items.iter().enumerate() {
+            check_node(project, &format!("{where_} layer item {slot}"), child, problems);
+        }
+    }
+    if let Item::Instance { component, required, .. } = &node.item {
+        if find_component(project, component).is_none() && *required {
+            problems.push(format!("{where_}: instance references unknown component `{component}`"));
+        }
+    }
+}
+
+/// The component definition `id` names, if it exists.
+fn find_component<'a>(project: &'a Project, id: &media_scene::NodeId) -> Option<&'a Component> {
+    project.components.iter().find(|component| &component.id == id)
+}
+
+/// Reports component definitions that reference each other in a cycle.
+///
+/// A cycle cannot be painted, so it must be rejected while the project is still
+/// data rather than discovered as a depth failure halfway through a render.
+fn component_cycles(project: &Project) -> Vec<String> {
+    fn references(node: &Node, out: &mut Vec<media_scene::NodeId>) {
+        match &node.item {
+            Item::Instance { component, .. } => out.push(component.clone()),
+            Item::Layer { items, .. } => {
+                for child in items {
+                    references(child, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn visit(
+        project: &Project,
+        id: &media_scene::NodeId,
+        path: &mut Vec<media_scene::NodeId>,
+        problems: &mut Vec<String>,
+    ) {
+        if path.contains(id) {
+            let chain: Vec<String> = path.iter().map(ToString::to_string).chain(std::iter::once(id.to_string())).collect();
+            problems.push(format!("component cycle: {}", chain.join(" -> ")));
+            return;
+        }
+        let Some(component) = find_component(project, id) else {
+            return;
+        };
+        path.push(id.clone());
+        for node in &component.items {
+            let mut used = Vec::new();
+            references(node, &mut used);
+            for next in used {
+                visit(project, &next, path, problems);
+            }
+        }
+        path.pop();
+    }
+    let mut problems = Vec::new();
+    let mut seen = Vec::new();
+    for component in &project.components {
+        if seen.contains(&component.id) {
+            problems.push(format!("component id `{}` is declared twice", component.id));
+            continue;
+        }
+        seen.push(component.id.clone());
+        visit(project, &component.id, &mut Vec::new(), &mut problems);
+    }
+    problems
 }
 
 /// Every declared color must parse. A silent fallback would repaint the film
@@ -522,7 +669,7 @@ fn check_item_colors(where_: &str, item: &Item, problems: &mut Vec<String>) {
             check_color(where_, accent.as_deref(), problems);
             check_color(where_, panel.as_deref(), problems);
         }
-        Item::Image { dur, .. } | Item::Video { dur, .. } => check_dur(where_, *dur, problems),
+        Item::Image { dur, .. } | Item::Video { dur, .. } | Item::Instance { dur, .. } => check_dur(where_, *dur, problems),
         Item::Shape { dur, color, .. } => {
             check_dur(where_, *dur, problems);
             check_color(where_, Some(color), problems);
@@ -544,7 +691,7 @@ fn check_item_colors(where_: &str, item: &Item, problems: &mut Vec<String>) {
         Item::Layer { dur, items, .. } => {
             check_dur(where_, *dur, problems);
             for (slot, child) in items.iter().enumerate() {
-                check_item_colors(&format!("{where_} layer item {slot}"), child, problems);
+                check_item_colors(&format!("{where_} layer item {slot}"), &child.item, problems);
             }
         }
         Item::Footnote { dur, color, .. } => {
@@ -623,7 +770,7 @@ fn preflight(
 fn preflight_item(
     project: &Project,
     where_: &str,
-    item: &Item,
+    node: &Node,
     fonts: &mut Fonts,
     media: &mut MediaLibrary,
     limits: DecodeLimits,
@@ -631,7 +778,7 @@ fn preflight_item(
     optional_missing: &mut Vec<String>,
     decode_failed: &mut bool,
 ) {
-    match item {
+    match &node.item {
         Item::Image { src, required, .. } => match media.image(src, limits) {
             Ok(_) => {}
             Err(error) if *required => {
@@ -651,6 +798,32 @@ fn preflight_item(
                 Err(_) => optional_missing.push(src.clone()),
             }
         }
+        Item::Instance { component, required, .. } => match find_component(project, component) {
+            Some(definition) => {
+                // Every instance points at the same definition, so its content is
+                // preflighted once per render instead of once per placement.
+                if !definition.items.is_empty() {
+                    for (slot, child) in definition.items.iter().enumerate() {
+                        preflight_item(
+                            project,
+                            &format!("{where_} component `{component}` item {slot}"),
+                            child,
+                            fonts,
+                            media,
+                            limits,
+                            failures,
+                            optional_missing,
+                            decode_failed,
+                        );
+                    }
+                }
+            }
+            None if *required => {
+                *decode_failed = true;
+                failures.push(format!("{where_} instance references unknown component `{component}`"));
+            }
+            None => {}
+        },
         Item::Layer { items, .. } => {
             for (slot, child) in items.iter().enumerate() {
                 preflight_item(
@@ -668,7 +841,7 @@ fn preflight_item(
         }
         _ => {}
     }
-    for (mono, text) in item_texts(item) {
+    for (mono, text) in item_texts(&node.item) {
         let missing: Vec<char> = text.chars().filter(|ch| !ch.is_whitespace() && !fonts.covers(*ch, mono)).collect();
         if !missing.is_empty() {
             let listed: String = missing.iter().take(12).collect();
@@ -702,12 +875,61 @@ fn item_texts(item: &Item) -> Vec<(bool, String)> {
         Item::Footnote { text, .. } => out.push((false, text.clone())),
         Item::Layer { items, .. } => {
             for child in items {
-                out.extend(item_texts(child));
+                out.extend(item_texts(&child.item));
             }
         }
         _ => {}
     }
     out
+}
+
+/// Reusable off-screen buffers for one render.
+///
+/// The world buffer (camera) and each component instance need their own frame at
+/// the same time, so buffers are taken by value and returned; nothing borrows
+/// the pool while painting into a buffer.
+struct FramePool {
+    width: u32,
+    height: u32,
+    free: Vec<Frame>,
+}
+
+impl FramePool {
+    fn new(width: u32, height: u32) -> Self {
+        Self { width, height, free: Vec::new() }
+    }
+
+    fn take(&mut self) -> Frame {
+        self.free.pop().unwrap_or_else(|| Frame::new(self.width, self.height))
+    }
+
+    fn put(&mut self, frame: Frame) {
+        self.free.push(frame);
+    }
+}
+
+/// How many component instances may nest before the graph is treated as a cycle.
+const MAX_INSTANCE_DEPTH: usize = 8;
+
+/// Evaluates one node's motion and paints its item.
+#[allow(clippy::too_many_arguments)]
+fn paint_node(
+    project: &Project,
+    fonts: &mut Fonts,
+    media: &mut MediaLibrary,
+    frame: &mut Frame,
+    node: &Node,
+    local: u32,
+    frame_index: u32,
+    seconds: f32,
+    zoom: f32,
+    alpha_mul: f32,
+    limits: DecodeLimits,
+    pool: &mut FramePool,
+    depth: usize,
+) -> Result<(), Error> {
+    let motion = node.anim.sample(local as f32);
+    paint_item(project, fonts, media, frame, &node.item, local, frame_index, seconds, zoom, alpha_mul, limits, &motion, pool, depth)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -716,7 +938,7 @@ fn paint_frame(
     fonts: &mut Fonts,
     media: &mut MediaLibrary,
     vignette: Option<&Vignette>,
-    scratch: &mut Frame,
+    pool: &mut FramePool,
     frame_index: u32,
     out: &mut Frame,
     limits: DecodeLimits,
@@ -735,23 +957,26 @@ fn paint_frame(
         // pushed, pulled or panned into the output frame like a real lens.
         let camera = scene.camera.as_ref();
         let offscreen = global || camera.is_some();
-        let target: &mut Frame = if offscreen {
-            scratch.fill(Rgba([0, 0, 0, 255]));
-            &mut *scratch
-        } else {
-            &mut *out
+        let mut scratch = if offscreen { Some(pool.take()) } else { None };
+        let target: &mut Frame = match scratch.as_mut() {
+            Some(buffer) => {
+                buffer.fill(Rgba([0, 0, 0, 255]));
+                buffer
+            }
+            None => out,
         };
         // The off-screen buffer may be larger than the output so a pushed-in
         // camera still has real pixels to show instead of an upscale.
         paint_background(target, &scene.background, seconds);
-        for item in &scene.items {
-            paint_item(project, fonts, media, target, item, local, frame_index, seconds, global_zoom, 1.0, limits)?;
+        for node in &scene.items {
+            paint_node(project, fonts, media, target, node, local, frame_index, seconds, global_zoom, 1.0, limits, pool, 0)?;
         }
         if global {
             // `zoom` is normalized to the whole world buffer, so the buffer's
             // own scale cancels out: a 1.62 push samples exactly as many source
             // pixels as the output needs.
-            out.resample_from(scratch, global_zoom, global_focus, global_rotate);
+            let buffer = scratch.as_ref().expect("global camera renders off-screen");
+            out.resample_from(buffer, global_zoom, global_focus, global_rotate);
         } else if let Some(camera) = camera {
             let t = if scene.duration > 1 { local as f32 / (scene.duration - 1) as f32 } else { 1.0 };
             let eased = apply(camera.ease, t);
@@ -760,7 +985,11 @@ fn paint_frame(
                 camera.focus_from[0] + (camera.focus_to[0] - camera.focus_from[0]) * eased,
                 camera.focus_from[1] + (camera.focus_to[1] - camera.focus_from[1]) * eased,
             ];
-            out.resample_from(scratch, zoom, focus, camera.rotate_to * eased);
+            let buffer = scratch.as_ref().expect("scene camera renders off-screen");
+            out.resample_from(buffer, zoom, focus, camera.rotate_to * eased);
+        }
+        if let Some(buffer) = scratch.take() {
+            pool.put(buffer);
         }
     }
     // Corner darkening is an authored look, not a house style: no declaration,
@@ -815,11 +1044,27 @@ fn paint_item(
     zoom: f32,
     alpha_mul: f32,
     limits: DecodeLimits,
+    motion: &Motion,
+    pool: &mut FramePool,
+    depth: usize,
 ) -> Result<(), Error> {
     // Layout lives in output-relative units. When the world is rasterized
     // supersampled for a camera push, every pixel measure scales with it.
     let (fw, fh) = (frame.width as f32, frame.height as f32);
     let s = fw / project.width as f32;
+    // Motion is evaluated once per node and then applied uniformly: position,
+    // an opacity multiplier and progress. A property the item cannot express is
+    // rejected during validation, never silently dropped here.
+    let alpha_mul = alpha_mul * motion.opacity;
+    // A follow path owns the position; an explicit track is the fallback.
+    let mx = motion.follow.map(|point| point[0]).or(motion.x);
+    let my = motion.follow.map(|point| point[1]).or(motion.y);
+    let mprogress = motion.progress;
+    // Position overrides apply to every item kind through one pair of helpers,
+    // so no arm can forget them or invent its own precedence.
+    let x_of = |x: f32| mx.unwrap_or(x);
+    let y_of = |y: f32| my.unwrap_or(y);
+    let progress_of = |progress: f32| mprogress.unwrap_or(progress);
     match item {
         Item::Text {
             at,
@@ -863,7 +1108,7 @@ fn paint_item(
             let color = parse_or(Some(color), Rgba([230, 238, 250, 255])).with_alpha(alpha);
             let limit = max_width.map(|m| m * fw);
             let lh = line_height.unwrap_or(1.25);
-            let top = px(*y, fh as u32) - drift;
+            let top = px(y_of(*y), fh as u32) - drift;
             // A reveal rectangle lets text grow out of a shape.
             if let Some(rect) = clip {
                 frame.set_clip([rect[0] * fw, rect[1] * fh, (rect[0] + rect[2]) * fw, (rect[1] + rect[3]) * fh]);
@@ -874,7 +1119,7 @@ fn paint_item(
                 fonts.draw_staggered(
                     frame,
                     visible,
-                    px(*x, fw as u32),
+                    px(x_of(*x), fw as u32),
                     top,
                     size,
                     *bold,
@@ -885,14 +1130,14 @@ fn paint_item(
                     life,
                 )
             } else {
-                fonts.draw_block(frame, visible, px(*x, fw as u32), top, size, *bold, color, *align, limit, lh)
+                fonts.draw_block(frame, visible, px(x_of(*x), fw as u32), top, size, *bold, color, *align, limit, lh)
             };
             if let Some(glow_color) = glow {
                 let gc = parse(glow_color);
                 if let Some(gc) = gc {
                     frame.glow(
-                        px(*x, fw as u32),
-                        px(*y, fh as u32) - drift + drawn / 2.0,
+                        px(x_of(*x), fw as u32),
+                        px(y_of(*y), fh as u32) - drift + drawn / 2.0,
                         size * 2.2,
                         gc.with_alpha(alpha * 0.10),
                     );
@@ -904,8 +1149,8 @@ fn paint_item(
                 fonts.draw_block(
                     frame,
                     sub_text,
-                    px(*x, fw as u32),
-                    px(*y, fh as u32) - drift + drawn + sub_size * 0.5,
+                    px(x_of(*x), fw as u32),
+                    px(y_of(*y), fh as u32) - drift + drawn + sub_size * 0.5,
                     sub_size,
                     false,
                     sub_color,
@@ -949,8 +1194,8 @@ fn paint_item(
             let block_h = revealed as f32 * size * lh + panel_pad * 2.0;
             let widest = lines.iter().map(|l| fonts.measure(l, size, false, true)).fold(0.0f32, f32::max);
             let block_w = widest + panel_pad * 2.0;
-            let ox = px(*x, fw as u32);
-            let oy = px(*y, fh as u32);
+            let ox = px(x_of(*x), fw as u32);
+            let oy = px(y_of(*y), fh as u32);
             if let Some(pc) = theme.panel.as_deref().and_then(parse) {
                 frame.round_rect(ox, oy, block_w, block_h, size * 0.6, pc.with_alpha(alpha));
             }
@@ -1008,8 +1253,8 @@ fn paint_item(
             fonts.draw_block(
                 frame,
                 &text,
-                px(*x, fw as u32),
-                px(*y, fh as u32),
+                px(x_of(*x), fw as u32),
+                px(y_of(*y), fh as u32),
                 *size * s,
                 true,
                 color,
@@ -1028,8 +1273,8 @@ fn paint_item(
                 return Ok(());
             }
             let drift = drift_y * s * (1.0 - alpha);
-            let cx = px(*x, fw as u32) - px(*w, fw as u32) / 2.0;
-            let cy = px(*y, fh as u32) - drift - px(*h, fh as u32) / 2.0;
+            let cx = px(x_of(*x), fw as u32) - px(*w, fw as u32) / 2.0;
+            let cy = px(y_of(*y), fh as u32) - drift - px(*h, fh as u32) / 2.0;
             let cw = px(*w, fw as u32);
             let ch = px(*h, fh as u32);
             let panel_color = parse_or(panel.as_deref(), Rgba([16, 24, 44, 255])).with_alpha(alpha * 0.85);
@@ -1086,8 +1331,8 @@ fn paint_item(
             let (bw, bh) = (px(*w, fw as u32), px(*h, fh as u32));
             frame.draw_bitmap(
                 &bitmap,
-                px(*x, fw as u32) - bw / 2.0,
-                px(*y, fh as u32) - bh / 2.0,
+                px(x_of(*x), fw as u32) - bw / 2.0,
+                px(y_of(*y), fh as u32) - bh / 2.0,
                 bw,
                 bh,
                 *fit,
@@ -1119,8 +1364,8 @@ fn paint_item(
             let (bw, bh) = (px(*w, fw as u32), px(*h, fh as u32));
             frame.draw_bitmap(
                 &bitmap,
-                px(*x, fw as u32) - bw / 2.0,
-                px(*y, fh as u32) - bh / 2.0,
+                px(x_of(*x), fw as u32) - bw / 2.0,
+                px(y_of(*y), fh as u32) - bh / 2.0,
                 bw,
                 bh,
                 *fit,
@@ -1138,8 +1383,8 @@ fn paint_item(
                 return Ok(());
             }
             let c = parse_or(Some(color), Rgba([110, 160, 255, 255])).with_alpha(alpha);
-            let cx = px(*x, fw as u32);
-            let cy = px(*y, fh as u32);
+            let cx = px(x_of(*x), fw as u32);
+            let cy = px(y_of(*y), fh as u32);
             match shape {
                 ShapeKind::Rect => frame.round_rect(cx, cy, px(*w, fw as u32), px(*h, fh as u32), *radius * s, c),
                 ShapeKind::Circle => frame.circle(cx, cy, px(*w, fw as u32) / 2.0, c, None),
@@ -1147,7 +1392,7 @@ fn paint_item(
                 ShapeKind::Line => {
                     // `progress` lets a line draw itself, which is how motion
                     // reads as intent rather than as a slideshow.
-                    let p = progress.clamp(0.0, 1.0);
+                    let p = progress_of(*progress).clamp(0.0, 1.0);
                     let ex = cx + px(*w, fw as u32) * p;
                     let ey = cy + px(*h, fh as u32) * p;
                     let thickness = stroke.unwrap_or(2.0) * s;
@@ -1251,10 +1496,11 @@ fn paint_item(
             }
             if let Some(width) = stroke {
                 let c = parse_or(Some(color), Rgba([110, 160, 255, 255])).with_alpha(alpha);
-                frame.stroke_polyline(&pixels, width * s, c, *progress, additive);
+                frame.stroke_polyline(&pixels, width * s, c, progress_of(*progress).clamp(0.0, 1.0), additive);
                 // A moving tip reads as a pen rather than a static outline.
-                if *progress > 0.01 && *progress < 0.999 {
-                    if let Some(tip) = pixels.get((pixels.len() as f32 * progress) as usize) {
+                let drawn = progress_of(*progress).clamp(0.0, 1.0);
+                if drawn > 0.01 && drawn < 0.999 {
+                    if let Some(tip) = pixels.get((pixels.len() as f32 * drawn) as usize) {
                         frame.glow(tip[0], tip[1], width * 4.0 * s, c);
                     }
                 }
@@ -1270,7 +1516,7 @@ fn paint_item(
                 return Ok(());
             }
             let c = parse_or(Some(color), Rgba([242, 201, 138, 255])).with_alpha(alpha);
-            frame.glow(px(*x, fw as u32), px(*y, fh as u32), px(*radius, fw as u32) * s, c);
+            frame.glow(px(x_of(*x), fw as u32), px(y_of(*y), fh as u32), px(*radius, fw as u32) * s, c);
         }
         Item::Layer { at, dur, zoom_from, zoom_to, edge, items } => {
             if local < *at || local >= *at + *dur {
@@ -1285,7 +1531,7 @@ fn paint_item(
             }
             let local_life = local - *at;
             for child in items {
-                paint_item(
+                paint_node(
                     project,
                     fonts,
                     media,
@@ -1297,8 +1543,52 @@ fn paint_item(
                     zoom,
                     alpha_mul * weight,
                     limits,
+                    pool,
+                    depth,
                 )?;
             }
+        }
+        Item::Instance { at, dur, component, x, y, w, h, fit, opacity, fade_in, fade_out, required } => {
+            if local < *at || local >= *at + *dur {
+                return Ok(());
+            }
+            let life = local - *at;
+            let alpha = fade(life, *dur, *fade_in, *fade_out) * opacity * alpha_mul;
+            if alpha <= 0.001 {
+                return Ok(());
+            }
+            if depth >= MAX_INSTANCE_DEPTH {
+                return Err(Error::invalid(format!(
+                    "component `{component}` nests deeper than {MAX_INSTANCE_DEPTH} levels; check for a cycle"
+                )));
+            }
+            let Some(definition) = find_component(project, component) else {
+                if *required {
+                    return Err(Error::invalid(format!("instance references unknown component `{component}`")));
+                }
+                return Ok(());
+            };
+            // The component is painted on its own transparent buffer and then
+            // placed into the box like an image, so an instance stays a reuse
+            // boundary instead of a copy of the definition's pixels.
+            let mut buffer = pool.take();
+            buffer.fill(Rgba([0, 0, 0, 0]));
+            for child in &definition.items {
+                paint_node(project, fonts, media, &mut buffer, child, life, frame_index, _seconds, zoom, 1.0, limits, pool, depth + 1)?;
+            }
+            let bitmap = Bitmap::new(buffer.width, buffer.height, buffer.pixels.clone());
+            pool.put(buffer);
+            let (bw, bh) = (px(*w, fw as u32), px(*h, fh as u32));
+            frame.draw_bitmap(
+                &bitmap,
+                px(x_of(*x), fw as u32) - bw / 2.0,
+                px(y_of(*y), fh as u32) - bh / 2.0,
+                bw,
+                bh,
+                *fit,
+                alpha,
+                0.0,
+            );
         }
         Item::Footnote { at, dur, text, size, x, y, align, color, fade_in, fade_out } => {
             if local < *at || local >= *at + *dur {
@@ -1313,8 +1603,8 @@ fn paint_item(
             fonts.draw_block(
                 frame,
                 text,
-                px(*x, fw as u32),
-                px(*y, fh as u32),
+                px(x_of(*x), fw as u32),
+                px(y_of(*y), fh as u32),
                 *size * s,
                 false,
                 c,
@@ -1811,7 +2101,10 @@ mod tests {
         let residue: Vec<_> = std::fs::read_dir(&dir)
             .unwrap()
             .filter_map(|entry| entry.ok())
-            .filter(|entry| entry.file_name().to_string_lossy().contains(".partial"))
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                name.starts_with("cancel.") && name.ends_with(".partial.mp4")
+            })
             .collect();
         assert!(residue.is_empty(), "a cancelled run must remove its partial file");
     }
@@ -1859,5 +2152,188 @@ mod tests {
         let dark = corner(serde_json::json!({ "vignette": 0.9 }), "vignette-on.mp4");
         assert!(plain > 200, "an undeclared vignette must leave the corner bright: {plain}");
         assert!(dark < plain, "a declared vignette must darken the corner: {dark} vs {plain}");
+    }
+
+    /// Reads back a preview PNG through the same decoder used for imports.
+    fn preview_pixels(json: &str, frame: u32, name: &str) -> (u32, u32, Vec<u8>) {
+        let dir = std::env::temp_dir().join("opencut-media-tests").join("preview");
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join(name);
+        let stats = super::preview_frame(json, frame, &out).expect("preview frame");
+        let mut library = media_codec::MediaLibrary::new();
+        let bitmap = library.image(out.to_str().unwrap(), media_codec::DecodeLimits::unbounded()).expect("decode png");
+        assert_eq!((bitmap.width, bitmap.height), (stats.width, stats.height));
+        (bitmap.width, bitmap.height, bitmap.rgba.clone())
+    }
+
+    /// Brightest column of a frame: the horizontal position of a white shape.
+    fn brightest_column(width: u32, height: u32, rgba: &[u8]) -> u32 {
+        let mut best = (0u32, 0u32);
+        for x in 0..width {
+            let mut sum = 0u32;
+            for y in 0..height {
+                let i = ((y * width + x) as usize) * 4;
+                sum += u32::from(rgba[i]) + u32::from(rgba[i + 1]) + u32::from(rgba[i + 2]);
+            }
+            if sum > best.1 {
+                best = (x, sum);
+            }
+        }
+        best.0
+    }
+
+    /// A position track moves a node across frames through the preview path.
+    #[test]
+    fn keyframed_position_moves_a_node() {
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 30,
+            "scenes": [{ "start": 0, "duration": 30,
+                "background": { "kind": "solid", "color": "#000000" },
+                "items": [{
+                    "kind": "shape", "shape": "rect", "at": 0, "dur": 30,
+                    "x": 0.1, "y": 0.5, "w": 0.06, "h": 0.06, "color": "#ffffff",
+                    "fade_in": 0, "fade_out": 0,
+                    "id": "mover",
+                    "anim": { "x": { "keys": [
+                        { "at": 0, "value": 0.1 },
+                        { "at": 29, "value": 0.9, "ease": "linear" }
+                    ] } }
+                }]
+            }],
+            "audio": null
+        });
+        let json = film.to_string();
+        let (w, h, early) = preview_pixels(&json, 2, "mover-early.png");
+        let (_, _, late) = preview_pixels(&json, 27, "mover-late.png");
+        let start = brightest_column(w, h, &early);
+        let end = brightest_column(w, h, &late);
+        assert!(start < 20, "the shape starts left, got column {start}");
+        assert!(end > 44, "the shape ends right, got column {end}");
+    }
+
+    /// Following a path places the node along the path's length, not at its
+    /// declared `x`.
+    #[test]
+    fn follow_path_drives_position() {
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 30,
+            "scenes": [{ "start": 0, "duration": 30,
+                "background": { "kind": "solid", "color": "#000000" },
+                "items": [{
+                    "kind": "shape", "shape": "line", "at": 0, "dur": 30,
+                    "x": 0.5, "y": 0.5, "w": 0.08, "h": 0.0, "color": "#ffffff", "stroke": 6.0,
+                    "fade_in": 0, "fade_out": 0,
+                    "anim": {
+                        "progress": { "keys": [
+                            { "at": 0, "value": 0.0 },
+                            { "at": 29, "value": 1.0, "ease": "linear" }
+                        ] },
+                        "follow": { "points": [[0.1, 0.5], [0.9, 0.5]] }
+                    }
+                }]
+            }],
+            "audio": null
+        });
+        let json = film.to_string();
+        let (w, h, early) = preview_pixels(&json, 1, "follow-early.png");
+        let (_, _, late) = preview_pixels(&json, 28, "follow-late.png");
+        assert!(brightest_column(w, h, &early) < 20, "follow starts at the path head");
+        assert!(brightest_column(w, h, &late) > 44, "follow ends at the path tail");
+    }
+
+    /// One component definition, two instances: the definition is painted at
+    /// each placement instead of being copied into the film data.
+    #[test]
+    fn component_instances_reuse_one_definition() {
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 10,
+            "components": [{
+                "id": "dot",
+                "items": [{ "kind": "shape", "shape": "rect", "at": 0, "dur": 10,
+                            "x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0, "color": "#ffffff",
+                            "fade_in": 0, "fade_out": 0 }]
+            }],
+            "scenes": [{ "start": 0, "duration": 10,
+                "background": { "kind": "solid", "color": "#000000" },
+                "items": [
+                    { "kind": "instance", "at": 0, "dur": 10, "component": "dot",
+                      "x": 0.25, "y": 0.5, "w": 0.2, "h": 0.2, "fade_in": 0, "fade_out": 0 },
+                    { "kind": "instance", "at": 0, "dur": 10, "component": "dot",
+                      "x": 0.75, "y": 0.5, "w": 0.2, "h": 0.2, "fade_in": 0, "fade_out": 0 }
+                ]
+            }],
+            "audio": null
+        });
+        let (w, h, rgba) = preview_pixels(&film.to_string(), 0, "instances.png");
+        let bright = |x: f32| {
+            let column = (x * w as f32) as u32;
+            let middle = h / 2;
+            let i = ((middle * w + column) as usize) * 4;
+            u32::from(rgba[i]) + u32::from(rgba[i + 1]) + u32::from(rgba[i + 2])
+        };
+        assert!(bright(0.25) > 200, "left instance must paint its component");
+        assert!(bright(0.75) > 200, "right instance must paint the same definition");
+        assert!(bright(0.5) < 40, "the gap between placements stays empty");
+    }
+
+    /// A component that reaches itself cannot be painted; it is rejected while
+    /// the project is still data.
+    #[test]
+    fn component_cycles_are_rejected() {
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 10,
+            "components": [{
+                "id": "loop",
+                "items": [{ "kind": "instance", "at": 0, "dur": 10, "component": "loop",
+                            "x": 0.5, "y": 0.5, "w": 1.0, "h": 1.0 }]
+            }],
+            "scenes": [{ "start": 0, "duration": 10, "background": { "kind": "solid", "color": "#000000" }, "items": [] }],
+            "audio": null
+        });
+        let out = std::env::temp_dir().join("opencut-media-tests").join("cycle.png");
+        let error = super::preview_frame(&film.to_string(), 0, &out).expect_err("a cycle must be rejected");
+        assert!(error.message.contains("component cycle"), "{error}");
+    }
+
+    /// Motion the item cannot express is a located error, not a dropped track.
+    #[test]
+    fn motion_the_item_cannot_express_is_rejected() {
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 10,
+            "scenes": [{ "start": 0, "duration": 10,
+                "background": { "kind": "solid", "color": "#000000" },
+                "items": [{ "kind": "bands", "at": 0, "dur": 10, "color": "#8fb4ff",
+                            "fade_in": 0, "fade_out": 0,
+                            "anim": { "x": { "keys": [{ "at": 0, "value": 0.2 }] } } }]
+            }],
+            "audio": null
+        });
+        let out = std::env::temp_dir().join("opencut-media-tests").join("bad-motion.png");
+        let error = super::preview_frame(&film.to_string(), 0, &out).expect_err("unsupported motion must fail");
+        assert!(error.message.contains("does not apply"), "{error}");
+    }
+
+    /// A previewed frame and the exported frame come from the same painter: a
+    /// flat frame must agree within codec tolerance.
+    #[test]
+    fn preview_matches_the_exported_frame() {
+        let film = serde_json::json!({
+            "width": 64, "height": 64, "fps": 15, "duration_frames": 6,
+            "scenes": [{ "start": 0, "duration": 6,
+                "background": { "kind": "solid", "color": "#3060a0" }, "items": [] }],
+            "audio": null
+        });
+        let json = film.to_string();
+        let (_, _, preview) = preview_pixels(&json, 2, "identity.png");
+        let out = std::env::temp_dir().join("opencut-media-tests").join("identity.mp4");
+        super::render_project(&json, &out, &mut |_, _| {}).expect("render");
+        let mut library = media_codec::MediaLibrary::new();
+        let exported = library.video_frame(out.to_str().unwrap(), 2.0 / 15.0, media_codec::DecodeLimits::unbounded()).expect("frame");
+        let middle = ((32 * 64 + 32) as usize) * 4;
+        for channel in 0..3 {
+            let a = i32::from(preview[middle + channel]);
+            let b = i32::from(exported.rgba[middle + channel]);
+            assert!((a - b).abs() <= 24, "channel {channel}: preview {a} vs export {b}");
+        }
     }
 }
