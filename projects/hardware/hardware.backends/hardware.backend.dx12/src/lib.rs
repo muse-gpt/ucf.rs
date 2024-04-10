@@ -14,4 +14,4 @@ mod stub;
 pub use win::{Dx12Backend, SharedBufferId};
 
 #[cfg(not(windows))]
-pub use stub::Dx12Backend;
+pub use stub::{Dx12Backend, SharedBufferId};
