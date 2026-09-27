@@ -1,0 +1,12 @@
+[package]
+name = "ucf-capability"
+description = "Runtime capability probing and feature sets for UCF backends"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde = { workspace = true }
