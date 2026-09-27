@@ -28,7 +28,7 @@ impl Scheduler {
                 .find(|t| t.id == task_id)
                 .expect("task in order must exist");
             let backend_idx = self.pick_backend_index(task)?;
-            self.backends[backend_idx].submit(graph)?;
+            self.backends[backend_idx].submit_task(graph, task)?;
         }
         Ok(())
     }

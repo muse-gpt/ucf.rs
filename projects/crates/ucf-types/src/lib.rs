@@ -7,10 +7,12 @@ mod dep;
 mod ids;
 mod objective;
 mod resource;
+mod shader;
 mod task;
 
 pub use dep::DepKind;
 pub use ids::{ResourceId, ShaderId, TaskId};
 pub use objective::{Objective, Priority};
 pub use resource::{Access, Domain, ResourceKind, ResourceNode};
+pub use shader::{ShaderOp, ShaderProgram};
 pub use task::{Dispatch, ParamValue, TaskKind, TaskNode};

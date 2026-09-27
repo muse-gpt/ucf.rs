@@ -1,0 +1,32 @@
+use serde::{Deserialize, Serialize};
+
+/// UCF internal shader program. Backends never consume HLSL or CUDA C source.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShaderProgram {
+    pub entry: String,
+    pub ops: Vec<ShaderOp>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ShaderOp {
+    /// Parallel fill: out[i] = value for i in 0..count
+    IotaFill { value: f32 },
+    /// Host/device copy without a kernel body
+    MemCopy,
+}
+
+impl ShaderProgram {
+    pub fn dispatch_fill(entry: impl Into<String>, value: f32) -> Self {
+        Self {
+            entry: entry.into(),
+            ops: vec![ShaderOp::IotaFill { value }],
+        }
+    }
+
+    pub fn mem_copy(entry: impl Into<String>) -> Self {
+        Self {
+            entry: entry.into(),
+            ops: vec![ShaderOp::MemCopy],
+        }
+    }
+}

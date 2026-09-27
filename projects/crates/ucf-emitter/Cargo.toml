@@ -1,0 +1,15 @@
+[package]
+name = "ucf-emitter"
+description = "Built-in UCF shader emitter: ShaderProgram to PTX / DXIL bytes"
+readme = "README.md"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+ucf-types = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

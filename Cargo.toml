@@ -7,6 +7,7 @@ members = [
     "projects/crates/ucf-capability",
     "projects/crates/ucf-optimize",
     "projects/crates/ucf-scheduler",
+    "projects/crates/ucf-emitter",
     "projects/crates/ucf-runtime",
     "projects/crates/backends/ucf-backend-cuda",
     "projects/crates/backends/ucf-backend-dx12",
@@ -20,6 +21,7 @@ default-members = [
     "projects/crates/ucf-capability",
     "projects/crates/ucf-optimize",
     "projects/crates/ucf-scheduler",
+    "projects/crates/ucf-emitter",
     "projects/crates/ucf-runtime",
     "projects/crates/backends/ucf-backend-cuda",
     "projects/crates/backends/ucf-backend-dx12",
@@ -46,7 +48,12 @@ ucf-ir = { path = "projects/crates/ucf-ir" }
 ucf-capability = { path = "projects/crates/ucf-capability" }
 ucf-optimize = { path = "projects/crates/ucf-optimize" }
 ucf-scheduler = { path = "projects/crates/ucf-scheduler" }
+ucf-emitter = { path = "projects/crates/ucf-emitter" }
 ucf-runtime = { path = "projects/crates/ucf-runtime" }
+ucf-backend-cuda = { path = "projects/crates/backends/ucf-backend-cuda" }
+ucf-backend-dx12 = { path = "projects/crates/backends/ucf-backend-dx12" }
+ucf-backend-vulkan = { path = "projects/crates/backends/ucf-backend-vulkan" }
+ucf-backend-rocm = { path = "projects/crates/backends/ucf-backend-rocm" }
 
 [profile.release]
 lto = true
