@@ -1,0 +1,16 @@
+[package]
+name = "example-graphics-post-process"
+description = "UCF IR example: post process"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "example-graphics-post-process"
+path = "src/main.rs"
+
+[dependencies]
+ucf-example-kit = { workspace = true }
+ucf = { workspace = true }

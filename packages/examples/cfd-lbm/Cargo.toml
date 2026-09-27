@@ -1,0 +1,16 @@
+[package]
+name = "example-cfd-lbm"
+description = "UCF IR example: LBM"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "example-cfd-lbm"
+path = "src/main.rs"
+
+[dependencies]
+ucf-example-kit = { workspace = true }
+ucf = { workspace = true }

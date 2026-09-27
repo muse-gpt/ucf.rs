@@ -1,0 +1,16 @@
+[package]
+name = "example-graphics-ray-tracing"
+description = "UCF IR example: ray tracing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "example-graphics-ray-tracing"
+path = "src/main.rs"
+
+[dependencies]
+ucf-example-kit = { workspace = true }
+ucf = { workspace = true }
