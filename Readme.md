@@ -1,34 +1,43 @@
 # ucf.rs
 
-**UCF — Unified Compute Fabric（统一计算织构）**
+**UCF — Unified Compute Fabric**
 
-语言无关、后端无关的异构计算中间层。把图形、深度学习、推理、云游戏等负载统一为资源图 + 任务图 + 依赖图，由调度器映射到 CUDA、DX12、Vulkan、ROCm 等后端。
+A language-neutral, backend-neutral heterogeneous compute layer. Graphics, deep learning, inference, cloud gaming, and similar workloads are expressed as a resource graph, task graph, and dependency graph; the scheduler maps them onto CUDA, DX12, Vulkan, ROCm, and other backends.
 
-## 状态
+## Status
 
-阶段 0 骨架：IR、调度器、运行时、后端 stub（CUDA / DX12 / Vulkan / ROCm）。
+Stage 0 skeleton: IR, scheduler, runtime, and backend stubs (CUDA / DX12 / Vulkan / ROCm).
 
-## 仓库布局
+## Layout
 
 ```text
 projects/crates/
-├── ucf/              # 门面库（应用入口）
-├── ucf-types/        # 共享底库
-├── ucf-ir/           # 图 IR
-├── ucf-capability/   # 能力探测
-├── ucf-optimize/     # 优化描述符
-├── ucf-scheduler/    # 调度器 + Backend trait
-├── ucf-runtime/      # 运行时
-└── backends/
+├── ucf/              # Public facade (application entry)
+├── ucf-types/        # Shared value types
+├── ucf-ir/           # Graph IR
+├── ucf-capability/   # Feature detection
+├── ucf-optimize/     # Optimization descriptors
+├── ucf-scheduler/    # Scheduler + Backend trait
+├── ucf-emitter/      # Built-in PTX / DXIL emitter
+├── ucf-runtime/      # Runtime
+└── ucf-backends/
     ├── ucf-backend-cuda/
     ├── ucf-backend-dx12/
     ├── ucf-backend-vulkan/
     └── ucf-backend-rocm/
+
+packages/examples/      # Runnable IR examples (one crate per graph, src/main.rs)
+packages/examples/kit/  # GraphBuilder + noop dry-run helpers
 ```
 
-设计文档在仓库外维护，不随开源 crate 发布。
+`.ucf` is the binary wire format. Run a single example:
 
-## 构建
+```bash
+cargo run -p example-cfd-navier-stokes
+cargo run -p example-deep-learning-attention
+```
+
+## Build
 
 ```bash
 cargo build
@@ -36,7 +45,7 @@ cargo test
 cargo run -p ucf-runtime --example matmul_cuda --features cuda
 ```
 
-应用侧推荐依赖 `ucf`：
+Applications should depend on `ucf`:
 
 ```toml
 ucf = { path = "../projects/crates/ucf", features = ["cuda", "dx12"] }
