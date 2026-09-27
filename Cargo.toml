@@ -9,10 +9,10 @@ members = [
     "projects/crates/ucf-scheduler",
     "projects/crates/ucf-emitter",
     "projects/crates/ucf-runtime",
-    "projects/crates/backends/ucf-backend-cuda",
-    "projects/crates/backends/ucf-backend-dx12",
-    "projects/crates/backends/ucf-backend-vulkan",
-    "projects/crates/backends/ucf-backend-rocm",
+    "projects/crates/ucf-backends/ucf-backend-cuda",
+    "projects/crates/ucf-backends/ucf-backend-dx12",
+    "projects/crates/ucf-backends/ucf-backend-vulkan",
+    "projects/crates/ucf-backends/ucf-backend-rocm",
 ]
 default-members = [
     "projects/crates/ucf",
@@ -23,8 +23,8 @@ default-members = [
     "projects/crates/ucf-scheduler",
     "projects/crates/ucf-emitter",
     "projects/crates/ucf-runtime",
-    "projects/crates/backends/ucf-backend-cuda",
-    "projects/crates/backends/ucf-backend-dx12",
+    "projects/crates/ucf-backends/ucf-backend-cuda",
+    "projects/crates/ucf-backends/ucf-backend-dx12",
 ]
 exclude = [
     "projects/.DS_Store",
@@ -41,6 +41,15 @@ publish = false
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
+libloading = "0.8"
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Security",
+    "Win32_System_Threading",
+] }
 
 ucf-types = { path = "projects/crates/ucf-types" }
 ucf = { path = "projects/crates/ucf" }
@@ -49,11 +58,12 @@ ucf-capability = { path = "projects/crates/ucf-capability" }
 ucf-optimize = { path = "projects/crates/ucf-optimize" }
 ucf-scheduler = { path = "projects/crates/ucf-scheduler" }
 ucf-emitter = { path = "projects/crates/ucf-emitter" }
+ucf-example-kit = { path = "packages/examples/kit" }
 ucf-runtime = { path = "projects/crates/ucf-runtime" }
-ucf-backend-cuda = { path = "projects/crates/backends/ucf-backend-cuda" }
-ucf-backend-dx12 = { path = "projects/crates/backends/ucf-backend-dx12" }
-ucf-backend-vulkan = { path = "projects/crates/backends/ucf-backend-vulkan" }
-ucf-backend-rocm = { path = "projects/crates/backends/ucf-backend-rocm" }
+ucf-backend-cuda = { path = "projects/crates/ucf-backends/ucf-backend-cuda" }
+ucf-backend-dx12 = { path = "projects/crates/ucf-backends/ucf-backend-dx12" }
+ucf-backend-vulkan = { path = "projects/crates/ucf-backends/ucf-backend-vulkan" }
+ucf-backend-rocm = { path = "projects/crates/ucf-backends/ucf-backend-rocm" }
 
 [profile.release]
 lto = true
