@@ -127,6 +127,18 @@ impl VulkanBackend {
             .collect())
     }
 
+    /// Download a device buffer as raw bytes (e.g. `R8G8B8A8` raster readback).
+    pub fn read_u8(&mut self, id: ResourceId) -> Result<Vec<u8>> {
+        let bytes = self
+            .buffers
+            .get(&id)
+            .ok_or_else(|| {
+                map_backend_err(BackendError(format!("resource {} not allocated", id.0)))
+            })?
+            .bytes;
+        self.readback(id, bytes)
+    }
+
     /// Run every task on this backend. Caller must [`prepare`] and seed inputs first.
     pub fn run_prepared(&mut self, graph: &Graph) -> Result<()> {
         graph.validate().map_err(SchedulerError::from)?;
@@ -223,6 +235,47 @@ impl VulkanBackend {
                 .bind_buffer_memory(buffer, memory, 0)
                 .map_err(vk_err)?;
             Ok((buffer, memory))
+        }
+    }
+
+    fn create_image(
+        &self,
+        width: u32,
+        height: u32,
+        usage: vk::ImageUsageFlags,
+        props: vk::MemoryPropertyFlags,
+    ) -> Result<(vk::Image, vk::DeviceMemory)> {
+        unsafe {
+            let info = vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(vk::Format::R8G8B8A8_UNORM)
+                .extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(1)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(usage)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE)
+                .initial_layout(vk::ImageLayout::UNDEFINED);
+            let image = self.device.create_image(&info, None).map_err(vk_err)?;
+            let reqs = self.device.get_image_memory_requirements(image);
+            let memory_type = self
+                .find_memory_type(reqs.memory_type_bits, props)
+                .ok_or_else(|| {
+                    map_backend_err(BackendError("no suitable image memory type".into()))
+                })?;
+            let alloc = vk::MemoryAllocateInfo::default()
+                .allocation_size(reqs.size)
+                .memory_type_index(memory_type);
+            let memory = self.device.allocate_memory(&alloc, None).map_err(vk_err)?;
+            self.device
+                .bind_image_memory(image, memory, 0)
+                .map_err(vk_err)?;
+            Ok((image, memory))
         }
     }
 
@@ -336,6 +389,142 @@ impl VulkanBackend {
             &push,
             (m * n).div_ceil(64).max(1),
         )
+    }
+
+    /// Clear an R8G8B8A8 image and copy packed pixels into buffer `dst`.
+    ///
+    /// Params: `dst`, `width`, `height`, optional `r`/`g`/`b`/`a` in `0..1`.
+    fn run_raster(&mut self, task: &TaskNode) -> Result<()> {
+        let dst = resource_param(task, "dst").map_err(map_backend_err)?;
+        let width = u32_param(task, "width").map_err(map_backend_err)?;
+        let height = u32_param(task, "height").map_err(map_backend_err)?;
+        if width == 0 || height == 0 {
+            return Err(map_backend_err(BackendError(
+                "raster width/height must be > 0".into(),
+            )));
+        }
+        let r = f32_param(task, "r").unwrap_or(0.0);
+        let g = f32_param(task, "g").unwrap_or(0.0);
+        let b = f32_param(task, "b").unwrap_or(0.0);
+        let a = f32_param(task, "a").unwrap_or(1.0);
+        let need = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or_else(|| map_backend_err(BackendError("raster size overflow".into())))?;
+        let dst_bytes = self.buf_bytes(dst)?;
+        if dst_bytes < need {
+            return Err(map_backend_err(BackendError(format!(
+                "raster destination {} has {dst_bytes} bytes, need at least {need}",
+                dst.0
+            ))));
+        }
+
+        unsafe {
+            let (image, image_mem) = self.create_image(
+                width,
+                height,
+                vk::ImageUsageFlags::TRANSFER_SRC | vk::ImageUsageFlags::TRANSFER_DST,
+                vk::MemoryPropertyFlags::DEVICE_LOCAL,
+            )?;
+            let (staging, staging_mem) = self.create_buffer(
+                need,
+                vk::BufferUsageFlags::TRANSFER_DST,
+                vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+            )?;
+
+            self.with_commands(|cmd| {
+                let range = vk::ImageSubresourceRange::default()
+                    .aspect_mask(vk::ImageAspectFlags::COLOR)
+                    .base_mip_level(0)
+                    .level_count(1)
+                    .base_array_layer(0)
+                    .layer_count(1);
+                let to_dst = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::empty())
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(image)
+                    .subresource_range(range);
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    std::slice::from_ref(&to_dst),
+                );
+                let clear = vk::ClearColorValue {
+                    float32: [r, g, b, a],
+                };
+                self.device.cmd_clear_color_image(
+                    cmd,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &clear,
+                    std::slice::from_ref(&range),
+                );
+                let to_src = vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(image)
+                    .subresource_range(range);
+                self.device.cmd_pipeline_barrier(
+                    cmd,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    std::slice::from_ref(&to_src),
+                );
+                let region = vk::BufferImageCopy::default()
+                    .buffer_offset(0)
+                    .buffer_row_length(0)
+                    .buffer_image_height(0)
+                    .image_subresource(
+                        vk::ImageSubresourceLayers::default()
+                            .aspect_mask(vk::ImageAspectFlags::COLOR)
+                            .mip_level(0)
+                            .base_array_layer(0)
+                            .layer_count(1),
+                    )
+                    .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+                    .image_extent(vk::Extent3D {
+                        width,
+                        height,
+                        depth: 1,
+                    });
+                self.device.cmd_copy_image_to_buffer(
+                    cmd,
+                    image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    staging,
+                    std::slice::from_ref(&region),
+                );
+            })?;
+
+            let mut pixels = vec![0u8; need];
+            let ptr = self
+                .device
+                .map_memory(staging_mem, 0, need as u64, vk::MemoryMapFlags::empty())
+                .map_err(vk_err)?;
+            std::ptr::copy_nonoverlapping(ptr.cast(), pixels.as_mut_ptr(), need);
+            self.device.unmap_memory(staging_mem);
+            self.device.destroy_buffer(staging, None);
+            self.device.free_memory(staging_mem, None);
+            self.device.destroy_image(image, None);
+            self.device.free_memory(image_mem, None);
+
+            self.upload(dst, &pixels)
+        }
     }
 
     fn dispatch_compute(
@@ -560,8 +749,9 @@ impl Backend for VulkanBackend {
             TaskKind::Copy => self.run_copy(task),
             TaskKind::Fill => self.run_fill(task),
             TaskKind::MatMul => self.run_matmul(task),
-            TaskKind::Raster | TaskKind::RtTrace => Err(map_backend_err(BackendError(
-                "raster and ray tracing are not in the vulkan thin gate".into(),
+            TaskKind::Raster => self.run_raster(task),
+            TaskKind::RtTrace => Err(map_backend_err(BackendError(
+                "ray tracing is not in the vulkan thin gate".into(),
             ))),
             other => Err(map_backend_err(BackendError(format!(
                 "vulkan backend does not implement {other:?}"
