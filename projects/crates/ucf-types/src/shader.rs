@@ -11,6 +11,8 @@ pub struct ShaderProgram {
 pub enum ShaderOp {
     /// Parallel fill: out[i] = value for i in 0..count
     IotaFill { value: f32 },
+    /// Naive row-major matmul: C[m,n] = A[m,k] * B[k,n]
+    MatMul,
     /// Host/device copy without a kernel body
     MemCopy,
 }
@@ -20,6 +22,13 @@ impl ShaderProgram {
         Self {
             entry: entry.into(),
             ops: vec![ShaderOp::IotaFill { value }],
+        }
+    }
+
+    pub fn matmul(entry: impl Into<String>) -> Self {
+        Self {
+            entry: entry.into(),
+            ops: vec![ShaderOp::MatMul],
         }
     }
 
