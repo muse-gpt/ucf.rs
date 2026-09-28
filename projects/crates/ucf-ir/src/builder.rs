@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
 
-use ucf_ir::{
+use crate::{
     Access, DepEdge, DepKind, Dispatch, Domain, Graph, Objective, ParamValue, Priority,
     ResourceGraph, ResourceId, ResourceKind, ResourceNode, ShaderId, TaskGraph, TaskId, TaskKind,
     TaskNode,
 };
 
+/// Ergonomic builder for [`Graph`] documents (resources, tasks, dependency edges).
 pub struct GraphBuilder {
     resources: Vec<ResourceNode>,
     tasks: Vec<TaskNode>,
@@ -116,6 +117,13 @@ impl GraphBuilder {
     }
 }
 
+impl Default for GraphBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Linear execution-order edges between task ids.
 pub fn chain_edges(ids: &[u64]) -> Vec<DepEdge> {
     ids.windows(2)
         .map(|pair| DepEdge {

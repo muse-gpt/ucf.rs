@@ -1,8 +1,6 @@
 # UCF IR Examples
 
-Each subdirectory is an independent workspace crate. `src/main.rs` builds a real `ucf_ir::Graph` and dry-runs it through the noop scheduler.
-
-Shared helpers: [`kit/`](./kit/) (`GraphBuilder` + `NoopBackend`).
+Each subdirectory is an independent workspace crate. `src/main.rs` builds a `Graph` with `GraphBuilder`, then dry-runs it through `ucf::prelude::*` (`dry_run` + `NoopBackend`).
 
 ```bash
 cargo run -p example-cfd-navier-stokes
