@@ -33,3 +33,4 @@ ucf-backend-cpu = { workspace = true }
 ucf-backend-cuda = { workspace = true }
 ucf-backend-dx12 = { workspace = true }
 ucf-backend-vulkan = { workspace = true }
+ucf-backend-rocm = { workspace = true }

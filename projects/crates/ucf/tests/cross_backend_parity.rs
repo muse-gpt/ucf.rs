@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use ucf_backend_cpu::{shared_store, CpuBackend};
 use ucf_backend_cuda::CudaBackend;
 use ucf_backend_dx12::Dx12Backend;
+use ucf_backend_rocm::RocmBackend;
 use ucf_backend_vulkan::VulkanBackend;
 use ucf_ir::{
     Access, DepEdge, DepKind, Domain, Graph, Objective, ParamValue, Priority, ResourceGraph,
@@ -178,6 +179,22 @@ fn available_gpu_backends_match_cpu() {
             }
         }
         Err(err) => eprintln!("skip vulkan: {err}"),
+    }
+
+    match RocmBackend::new(0) {
+        Ok(mut rocm) => {
+            if rocm.prepare(&graph).is_ok()
+                && rocm.write_f32(Rid(1), &seed()).is_ok()
+                && rocm.run_prepared(&graph).is_ok()
+            {
+                let actual = rocm.read_f32(Rid(4)).expect("rocm read");
+                assert_eq!(actual, expected, "rocm");
+                ran += 1;
+            } else {
+                eprintln!("skip rocm (prepare/run failed)");
+            }
+        }
+        Err(err) => eprintln!("skip rocm: {err}"),
     }
 
     eprintln!("cross-backend parity ran {ran} GPU backend(s) against CPU");
