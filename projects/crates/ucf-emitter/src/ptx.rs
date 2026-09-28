@@ -7,11 +7,15 @@ pub fn emit_ptx(program: &ShaderProgram) -> Result<Vec<u8>, String> {
             ShaderOp::MemCopy => continue,
             ShaderOp::IotaFill { value } => {
                 let text = emit_iota_fill(&program.entry, *value);
-                return Ok(text.into_bytes());
+                let mut bytes = text.into_bytes();
+                bytes.push(0);
+                return Ok(bytes);
             }
             ShaderOp::MatMul => {
                 let text = emit_matmul(&program.entry);
-                return Ok(text.into_bytes());
+                let mut bytes = text.into_bytes();
+                bytes.push(0);
+                return Ok(bytes);
             }
         }
     }
