@@ -2,6 +2,9 @@
 #![warn(missing_docs)]
 
 #[cfg(windows)]
+mod params;
+
+#[cfg(windows)]
 mod win;
 
 #[cfg(not(windows))]
