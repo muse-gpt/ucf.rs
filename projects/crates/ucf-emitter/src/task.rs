@@ -1,6 +1,10 @@
 use ucf_types::{ParamValue, ShaderOp, ShaderProgram, TaskKind, TaskNode};
 
 /// Build a backend-facing [`ShaderProgram`] from a task node.
+///
+/// `Raster` / `RtTrace` keep a placeholder program: clear / present params are
+/// consumed by graphics backends (`dst`, `width`, `height`, optional `r`/`g`/`b`/`a`),
+/// not lowered to a compute kernel here.
 pub fn program_from_task(task: &TaskNode) -> ShaderProgram {
     match &task.kind {
         TaskKind::Copy => ShaderProgram::mem_copy("ucf_copy"),
