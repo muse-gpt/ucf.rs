@@ -26,8 +26,7 @@ projects/crates/
     ├── ucf-backend-vulkan/
     └── ucf-backend-rocm/
 
-packages/examples/      # Runnable IR examples (one crate per graph, src/main.rs)
-packages/examples/kit/  # GraphBuilder + noop dry-run helpers
+projects/examples/      # Runnable IR examples (one crate per graph, src/main.rs)
 ```
 
 `.ucf` is the binary wire format. Run a single example:
