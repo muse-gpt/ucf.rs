@@ -1,38 +1,42 @@
 use std::collections::BTreeMap;
 
 use ucf_capability::{Feature, FeatureSet};
-use ucf_emitter::{emit_dxil, program_from_task};
+use ucf_emitter::{emit_dxil, emit_raster_tri_dxbc, program_from_task};
 use ucf_ir::Graph;
 use ucf_scheduler::{Backend, Error as SchedulerError, Result};
 use ucf_types::{ResourceId, TaskKind, TaskNode};
 use windows::core::Interface;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
-use windows::Win32::Graphics::Direct3D::{D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_12_1};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, RECT, WAIT_OBJECT_0};
+use windows::Win32::Graphics::Direct3D::{
+    D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_12_1, D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST,
+};
 use windows::Win32::Graphics::Direct3D12::{
-    D3D12SerializeRootSignature, D3D12_CLEAR_VALUE, D3D12_COMMAND_LIST_TYPE_DIRECT,
-    D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE, D3D12_COMPUTE_PIPELINE_STATE_DESC,
-    D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
-    D3D12_DESCRIPTOR_HEAP_DESC, D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV,
-    D3D12_FENCE_FLAG_NONE, D3D12_HEAP_FLAG_NONE, D3D12_HEAP_FLAG_SHARED, D3D12_HEAP_FLAGS,
-    D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT, D3D12_HEAP_TYPE_READBACK,
-    D3D12_HEAP_TYPE_UPLOAD, D3D12_MEMORY_POOL_UNKNOWN, D3D12_PLACED_SUBRESOURCE_FOOTPRINT,
-    D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
-    D3D12_RESOURCE_BARRIER_FLAG_NONE, D3D12_RESOURCE_BARRIER_TYPE_TRANSITION,
-    D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER, D3D12_RESOURCE_DIMENSION_TEXTURE2D,
-    D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS,
-    D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATES, D3D12_RESOURCE_STATE_COMMON,
-    D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE,
+    D3D12SerializeRootSignature, D3D12_BLEND_DESC, D3D12_CLEAR_VALUE,
+    D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_QUEUE_DESC, D3D12_COMMAND_QUEUE_FLAG_NONE,
+    D3D12_COMPUTE_PIPELINE_STATE_DESC, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+    D3D12_CULL_MODE_NONE, D3D12_DEPTH_STENCIL_DESC, D3D12_DESCRIPTOR_HEAP_DESC,
+    D3D12_DESCRIPTOR_HEAP_FLAG_NONE, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, D3D12_FENCE_FLAG_NONE,
+    D3D12_FILL_MODE_SOLID, D3D12_GRAPHICS_PIPELINE_STATE_DESC, D3D12_HEAP_FLAG_NONE,
+    D3D12_HEAP_FLAG_SHARED, D3D12_HEAP_FLAGS, D3D12_HEAP_PROPERTIES, D3D12_HEAP_TYPE_DEFAULT,
+    D3D12_HEAP_TYPE_READBACK, D3D12_HEAP_TYPE_UPLOAD, D3D12_INPUT_LAYOUT_DESC,
+    D3D12_MEMORY_POOL_UNKNOWN, D3D12_PLACED_SUBRESOURCE_FOOTPRINT, D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+    D3D12_RASTERIZER_DESC, D3D12_RESOURCE_BARRIER, D3D12_RESOURCE_BARRIER_0,
+    D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES, D3D12_RESOURCE_BARRIER_FLAG_NONE,
+    D3D12_RESOURCE_BARRIER_TYPE_TRANSITION, D3D12_RESOURCE_DESC, D3D12_RESOURCE_DIMENSION_BUFFER,
+    D3D12_RESOURCE_DIMENSION_TEXTURE2D, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET,
+    D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATES,
+    D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE,
     D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET,
-    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_TRANSITION_BARRIER,
-    D3D12_ROOT_CONSTANTS, D3D12_ROOT_DESCRIPTOR, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
+    D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_TRANSITION_BARRIER, D3D12_ROOT_CONSTANTS,
+    D3D12_ROOT_DESCRIPTOR, D3D12_ROOT_PARAMETER, D3D12_ROOT_PARAMETER_0,
     D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS, D3D12_ROOT_PARAMETER_TYPE_SRV,
     D3D12_ROOT_PARAMETER_TYPE_UAV, D3D12_ROOT_SIGNATURE_DESC, D3D12_ROOT_SIGNATURE_FLAG_NONE,
     D3D12_SHADER_BYTECODE, D3D12_SHADER_VISIBILITY_ALL, D3D12_TEXTURE_COPY_LOCATION,
     D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT, D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX,
-    D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D_ROOT_SIGNATURE_VERSION_1,
-    ID3D12CommandAllocator, ID3D12CommandQueue, ID3D12DescriptorHeap, ID3D12Device, ID3D12Fence,
-    ID3D12GraphicsCommandList, ID3D12PipelineState, ID3D12Resource, ID3D12RootSignature,
-    D3D12CreateDevice,
+    D3D12_TEXTURE_LAYOUT_UNKNOWN, D3D12_TEXTURE_LAYOUT_ROW_MAJOR, D3D12_VIEWPORT,
+    D3D_ROOT_SIGNATURE_VERSION_1, ID3D12CommandAllocator, ID3D12CommandQueue, ID3D12DescriptorHeap,
+    ID3D12Device, ID3D12Fence, ID3D12GraphicsCommandList, ID3D12PipelineState, ID3D12Resource,
+    ID3D12RootSignature, D3D12CreateDevice,
 };
 use windows::Win32::Graphics::Dxgi::Common::{
     DXGI_FORMAT_R8G8B8A8_UNORM, DXGI_FORMAT_UNKNOWN, DXGI_SAMPLE_DESC,
@@ -40,7 +44,7 @@ use windows::Win32::Graphics::Dxgi::Common::{
 use windows::Win32::Graphics::Dxgi::{CreateDXGIFactory1, IDXGIAdapter1, IDXGIFactory4};
 use windows::Win32::System::Threading::{CreateEventW, WaitForSingleObject, INFINITE};
 
-use crate::params::{f32_param, resource_param, u32_param, BackendError};
+use crate::params::{f32_param, resource_param, str_param, u32_param, BackendError};
 
 struct DeviceBuffer {
     resource: ID3D12Resource,
@@ -653,9 +657,10 @@ impl Dx12Backend {
         }
     }
 
-    /// Clear an R8G8B8A8 render target and copy pixels into buffer `dst`.
+    /// Rasterize into an R8G8B8A8 RT and copy packed pixels into buffer `dst`.
     ///
-    /// Params: `dst`, `width`, `height`, optional `r`/`g`/`b`/`a` in `0..1`.
+    /// Params: `dst`, `width`, `height`, optional `r`/`g`/`b`/`a` in `0..1`,
+    /// optional `draw` = `clear` (default) or `tri` (yellow NDC triangle after clear).
     fn run_raster(&mut self, task: &TaskNode) -> Result<()> {
         let dst = resource_param(task, "dst").map_err(map_backend_err)?;
         let width = u32_param(task, "width").map_err(map_backend_err)?;
@@ -664,6 +669,12 @@ impl Dx12Backend {
             return Err(map_backend_err(BackendError(
                 "raster width/height must be > 0".into(),
             )));
+        }
+        let draw = str_param(task, "draw").unwrap_or("clear");
+        if draw != "clear" && draw != "tri" {
+            return Err(map_backend_err(BackendError(format!(
+                "raster draw must be `clear` or `tri`, got `{draw}`"
+            ))));
         }
         let r = f32_param(task, "r").unwrap_or(0.0);
         let g = f32_param(task, "g").unwrap_or(0.0);
@@ -680,6 +691,12 @@ impl Dx12Backend {
                 dst.0
             ))));
         }
+
+        let tri_shaders = if draw == "tri" {
+            Some(emit_raster_tri_dxbc().map_err(map_emit_err)?)
+        } else {
+            None
+        };
 
         unsafe {
             let clear = D3D12_CLEAR_VALUE {
@@ -759,6 +776,11 @@ impl Dx12Backend {
                 D3D12_HEAP_FLAG_NONE,
             )?;
 
+            let graphics = match &tri_shaders {
+                Some(shaders) => Some(self.create_graphics_tri_pso(&shaders.vs, &shaders.ps)?),
+                None => None,
+            };
+
             self.allocator.Reset().map_err(dx_err)?;
             let list: ID3D12GraphicsCommandList = self
                 .device
@@ -766,6 +788,29 @@ impl Dx12Backend {
                 .map_err(dx_err)?;
 
             list.ClearRenderTargetView(rtv, &[r, g, b, a], None);
+            if let Some((root, pso)) = &graphics {
+                let viewport = D3D12_VIEWPORT {
+                    TopLeftX: 0.0,
+                    TopLeftY: 0.0,
+                    Width: width as f32,
+                    Height: height as f32,
+                    MinDepth: 0.0,
+                    MaxDepth: 1.0,
+                };
+                let scissor = RECT {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                };
+                list.OMSetRenderTargets(1, Some(&rtv), false, None);
+                list.RSSetViewports(&[viewport]);
+                list.RSSetScissorRects(&[scissor]);
+                list.SetGraphicsRootSignature(root);
+                list.SetPipelineState(pso);
+                list.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                list.DrawInstanced(3, 1, 0, 0);
+            }
             transition(
                 &list,
                 &rt,
@@ -804,6 +849,95 @@ impl Dx12Backend {
             staging.Unmap(0, None);
 
             self.upload(dst, &pixels)
+        }
+    }
+
+    fn create_graphics_tri_pso(
+        &self,
+        vs: &[u8],
+        ps: &[u8],
+    ) -> Result<(ID3D12RootSignature, ID3D12PipelineState)> {
+        unsafe {
+            let root_desc = D3D12_ROOT_SIGNATURE_DESC {
+                NumParameters: 0,
+                pParameters: std::ptr::null(),
+                NumStaticSamplers: 0,
+                pStaticSamplers: std::ptr::null(),
+                Flags: D3D12_ROOT_SIGNATURE_FLAG_NONE,
+            };
+            let mut blob = None;
+            let mut error_blob = None;
+            D3D12SerializeRootSignature(
+                &root_desc,
+                D3D_ROOT_SIGNATURE_VERSION_1,
+                &mut blob,
+                Some(&mut error_blob),
+            )
+            .map_err(dx_err)?;
+            let blob = blob.ok_or_else(|| dx_err_msg("graphics root signature serialize null"))?;
+            let bytes =
+                std::slice::from_raw_parts(blob.GetBufferPointer().cast(), blob.GetBufferSize());
+            let root: ID3D12RootSignature =
+                self.device.CreateRootSignature(0, bytes).map_err(dx_err)?;
+
+            let mut rtv_formats = [DXGI_FORMAT_UNKNOWN; 8];
+            rtv_formats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            let mut pso_desc = D3D12_GRAPHICS_PIPELINE_STATE_DESC {
+                pRootSignature: std::mem::ManuallyDrop::new(Some(root.clone())),
+                VS: D3D12_SHADER_BYTECODE {
+                    pShaderBytecode: vs.as_ptr().cast(),
+                    BytecodeLength: vs.len(),
+                },
+                PS: D3D12_SHADER_BYTECODE {
+                    pShaderBytecode: ps.as_ptr().cast(),
+                    BytecodeLength: ps.len(),
+                },
+                BlendState: D3D12_BLEND_DESC {
+                    AlphaToCoverageEnable: false.into(),
+                    IndependentBlendEnable: false.into(),
+                    RenderTarget: std::mem::zeroed(),
+                },
+                SampleMask: u32::MAX,
+                RasterizerState: D3D12_RASTERIZER_DESC {
+                    FillMode: D3D12_FILL_MODE_SOLID,
+                    CullMode: D3D12_CULL_MODE_NONE,
+                    FrontCounterClockwise: false.into(),
+                    DepthBias: 0,
+                    DepthBiasClamp: 0.0,
+                    SlopeScaledDepthBias: 0.0,
+                    DepthClipEnable: true.into(),
+                    MultisampleEnable: false.into(),
+                    AntialiasedLineEnable: false.into(),
+                    ForcedSampleCount: 0,
+                    ConservativeRaster:
+                        windows::Win32::Graphics::Direct3D12::D3D12_CONSERVATIVE_RASTERIZATION_MODE_OFF,
+                },
+                DepthStencilState: D3D12_DEPTH_STENCIL_DESC {
+                    DepthEnable: false.into(),
+                    ..Default::default()
+                },
+                InputLayout: D3D12_INPUT_LAYOUT_DESC {
+                    pInputElementDescs: std::ptr::null(),
+                    NumElements: 0,
+                },
+                PrimitiveTopologyType: D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE,
+                NumRenderTargets: 1,
+                RTVFormats: rtv_formats,
+                SampleDesc: DXGI_SAMPLE_DESC {
+                    Count: 1,
+                    Quality: 0,
+                },
+                ..Default::default()
+            };
+            // Default RT blend: one render target, opaque.
+            pso_desc.BlendState.RenderTarget[0].RenderTargetWriteMask = 0x0f;
+            pso_desc.BlendState.RenderTarget[0].BlendEnable = false.into();
+
+            let pso: ID3D12PipelineState = self
+                .device
+                .CreateGraphicsPipelineState(&pso_desc)
+                .map_err(dx_err)?;
+            Ok((root, pso))
         }
     }
 

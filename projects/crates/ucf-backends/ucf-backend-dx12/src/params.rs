@@ -53,3 +53,17 @@ pub fn f32_param(task: &TaskNode, key: &str) -> Result<f32, BackendError> {
         ))),
     }
 }
+
+pub fn str_param<'a>(task: &'a TaskNode, key: &str) -> Result<&'a str, BackendError> {
+    match task.params.get(key) {
+        Some(ParamValue::Str(v)) => Ok(v.as_str()),
+        Some(other) => Err(BackendError(format!(
+            "task {} param `{key}` must be string, got {other:?}",
+            task.id.0
+        ))),
+        None => Err(BackendError(format!(
+            "task {} missing param `{key}`",
+            task.id.0
+        ))),
+    }
+}
