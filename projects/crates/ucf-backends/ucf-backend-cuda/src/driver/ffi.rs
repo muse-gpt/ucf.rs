@@ -7,8 +7,40 @@ pub type CUmodule = *mut c_void;
 pub type CUfunction = *mut c_void;
 pub type CUdeviceptr = u64;
 pub type CUstream = *mut c_void;
+pub type CUexternalMemory = *mut c_void;
 
 pub const CUDA_SUCCESS: CUresult = 0;
+pub const CU_EXTERNAL_MEMORY_HANDLE_TYPE_D3D12_RESOURCE: u32 = 5;
+pub const CUDA_EXTERNAL_MEMORY_DEDICATED: u32 = 0x1;
+
+#[repr(C)]
+pub struct CUDA_EXTERNAL_MEMORY_HANDLE_DESC {
+    pub type_: u32,
+    pub handle: CUDA_EXTERNAL_MEMORY_HANDLE,
+    pub size: u64,
+    pub flags: u32,
+}
+
+#[repr(C)]
+pub union CUDA_EXTERNAL_MEMORY_HANDLE {
+    pub fd: i32,
+    pub win32: CUDA_EXTERNAL_MEMORY_WIN32,
+    pub nv_sci_buf_object: *const c_void,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CUDA_EXTERNAL_MEMORY_WIN32 {
+    pub handle: *mut c_void,
+    pub name: *const c_void,
+}
+
+#[repr(C)]
+pub struct CUDA_EXTERNAL_MEMORY_BUFFER_DESC {
+    pub offset: u64,
+    pub size: u64,
+    pub flags: u32,
+}
 
 #[repr(C)]
 pub struct CUuuid {
@@ -67,3 +99,13 @@ pub type CuLaunchKernel = unsafe extern "C" fn(
 pub type CuStreamCreate = unsafe extern "C" fn(*mut CUstream, u32) -> CUresult;
 pub type CuStreamSynchronize = unsafe extern "C" fn(CUstream) -> CUresult;
 pub type CuStreamDestroy = unsafe extern "C" fn(CUstream) -> CUresult;
+pub type CuImportExternalMemory = unsafe extern "C" fn(
+    *mut CUexternalMemory,
+    *const CUDA_EXTERNAL_MEMORY_HANDLE_DESC,
+) -> CUresult;
+pub type CuExternalMemoryGetMappedBuffer = unsafe extern "C" fn(
+    *mut CUdeviceptr,
+    CUexternalMemory,
+    *const CUDA_EXTERNAL_MEMORY_BUFFER_DESC,
+) -> CUresult;
+pub type CuDestroyExternalMemory = unsafe extern "C" fn(CUexternalMemory) -> CUresult;

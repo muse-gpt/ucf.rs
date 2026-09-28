@@ -5,4 +5,4 @@ mod backend;
 mod driver;
 mod params;
 
-pub use backend::CudaBackend;
+pub use backend::{CudaBackend, ImportedBufferId};

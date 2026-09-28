@@ -6,7 +6,7 @@ use ucf_ir::{Graph, TaskKind, TaskNode};
 use ucf_scheduler::{Backend, Error as SchedulerError, Result};
 use ucf_types::ResourceId;
 
-use crate::driver::{CudaDriver, CUdeviceptr, DriverError};
+use crate::driver::{CudaDriver, CUdeviceptr, CUexternalMemory, DriverError};
 use crate::params::{f32_param, resource_param, u32_param, BackendError};
 
 struct DeviceBuffer {
@@ -14,10 +14,22 @@ struct DeviceBuffer {
     bytes: usize,
 }
 
+struct ImportedBuffer {
+    ext: CUexternalMemory,
+    ptr: CUdeviceptr,
+    bytes: usize,
+}
+
+/// Opaque id for a buffer imported from a DX12 NT shared handle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ImportedBufferId(pub u64);
+
 /// NVIDIA backend via CUDA Driver API with device-resident resources.
 pub struct CudaBackend {
     driver: CudaDriver,
     buffers: BTreeMap<ResourceId, DeviceBuffer>,
+    imported: BTreeMap<ImportedBufferId, ImportedBuffer>,
+    next_imported: u64,
 }
 
 impl CudaBackend {
@@ -27,7 +39,50 @@ impl CudaBackend {
         Ok(Self {
             driver,
             buffers: BTreeMap::new(),
+            imported: BTreeMap::new(),
+            next_imported: 1,
         })
+    }
+
+    /// Import a D3D12 NT shared handle and map it for CUDA access.
+    pub fn import_dx12_nt_handle(
+        &mut self,
+        nt_handle: isize,
+        bytes: usize,
+    ) -> Result<ImportedBufferId> {
+        let (ext, ptr) = self
+            .driver
+            .import_d3d12_resource(nt_handle as *mut _, bytes)
+            .map_err(map_driver_err)?;
+        let id = ImportedBufferId(self.next_imported);
+        self.next_imported += 1;
+        self.imported.insert(
+            id,
+            ImportedBuffer {
+                ext,
+                ptr,
+                bytes,
+            },
+        );
+        Ok(id)
+    }
+
+    /// Download an imported DX12-shared buffer as `f32` values.
+    pub fn read_imported_f32(&self, id: ImportedBufferId) -> Result<Vec<f32>> {
+        let buf = self.imported.get(&id).ok_or_else(|| {
+            map_backend_err(BackendError(format!(
+                "imported buffer {} not allocated",
+                id.0
+            )))
+        })?;
+        let mut host = vec![0u8; buf.bytes];
+        self.driver
+            .memcpy_dtoh(&mut host, buf.ptr)
+            .map_err(map_driver_err)?;
+        Ok(host
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect())
     }
 
     /// Upload host `f32` values into an allocated device buffer.
@@ -92,12 +147,20 @@ impl CudaBackend {
 
 impl Drop for CudaBackend {
     fn drop(&mut self) {
+        let imported = std::mem::take(&mut self.imported);
+        for (_, buf) in imported {
+            let _ = self.driver.destroy_external_memory(buf.ext);
+        }
         let buffers = std::mem::take(&mut self.buffers);
         for (_, buf) in buffers {
             let _ = self.driver.mem_free(buf.ptr);
         }
     }
 }
+
+// Imported external-memory handles are owned here and used on the submit thread.
+unsafe impl Send for CudaBackend {}
+unsafe impl Sync for CudaBackend {}
 
 impl Backend for CudaBackend {
     fn name(&self) -> &str {
