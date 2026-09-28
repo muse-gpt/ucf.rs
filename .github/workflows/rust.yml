@@ -21,7 +21,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install cargo-cry
-        run: cargo install --git https://github.com/oovm/git-tools.git --bin cargo-cry --locked
+        run: cargo install --git https://github.com/oovm/cargo-tools.git --bin cargo-cry --locked
 
       - name: cargo cry
         run: cargo cry
