@@ -20,8 +20,8 @@ pub use ucf_types::{
 
 // Graph IR
 pub use ucf_ir::{
-    chain_edges, DepEdge, Error as IrError, Graph, GraphBuilder, ResourceGraph, Result as IrResult,
-    TaskGraph,
+    chain_edges, decode, encode, DepEdge, Error as IrError, Graph, GraphBuilder, ResourceGraph,
+    Result as IrResult, TaskGraph, MAGIC as UCF_MAGIC, WIRE_MAJOR as UCF_WIRE_MAJOR,
 };
 
 // Capability / optimization
@@ -46,10 +46,10 @@ pub use ucf_backend_dx12 as backend_dx12;
 /// Common imports for application code.
 pub mod prelude {
     pub use crate::{
-        apply, Access, Backend, CapacityPolicy, chain_edges, DepEdge, DepKind, Dispatch, Domain,
-        dry_run, Feature, FeatureSet, Graph, GraphBuilder, NoopBackend, Objective, Optimization,
-        Priority, ResourceGraph, ResourceId, ResourceKind, ResourceNode, Runtime, Scheduler,
-        ShaderId, TaskGraph, TaskId, TaskKind, TaskNode,
+        apply, decode, encode, Access, Backend, CapacityPolicy, chain_edges, DepEdge, DepKind,
+        Dispatch, Domain, dry_run, Feature, FeatureSet, Graph, GraphBuilder, NoopBackend, Objective,
+        Optimization, Priority, ResourceGraph, ResourceId, ResourceKind, ResourceNode, Runtime,
+        Scheduler, ShaderId, TaskGraph, TaskId, TaskKind, TaskNode, UCF_MAGIC, UCF_WIRE_MAJOR,
     };
 
     #[cfg(feature = "cpu")]
