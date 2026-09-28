@@ -31,6 +31,7 @@ pub struct Dx12Backend {
 }
 
 impl Dx12Backend {
+    /// Opens the default DXGI adapter and creates a Direct3D 12 device and queues.
     pub fn new() -> Result<Self> {
         unsafe {
             let factory: IDXGIFactory4 = CreateDXGIFactory1().map_err(dx_err)?;
