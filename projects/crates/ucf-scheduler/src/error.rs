@@ -1,4 +1,5 @@
 use thiserror::Error;
+use ucf_ir::Domain;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -10,4 +11,10 @@ pub enum Error {
     NoBackend(String),
     #[error("backend `{0}` failed: {1}")]
     Backend(String, String),
+    #[error("capacity exceeded on {domain:?}: used {used} bytes, limit {limit}")]
+    CapacityExceeded {
+        domain: Domain,
+        used: u64,
+        limit: u64,
+    },
 }
