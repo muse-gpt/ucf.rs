@@ -19,6 +19,10 @@ impl Scheduler {
     pub fn execute(&mut self, graph: &Graph) -> Result<()> {
         graph.validate()?;
 
+        for backend in &mut self.backends {
+            backend.prepare(graph)?;
+        }
+
         let order = graph.tasks.topological_order()?;
         for task_id in order {
             let task = graph
@@ -35,6 +39,10 @@ impl Scheduler {
 
     fn pick_backend_index(&self, task: &ucf_ir::TaskNode) -> Result<usize> {
         let prefer_cuda = matches!(task.kind, ucf_ir::TaskKind::MatMul | ucf_ir::TaskKind::Dispatch);
+        let prefer_cpu = matches!(
+            task.kind,
+            ucf_ir::TaskKind::Copy | ucf_ir::TaskKind::Fill
+        );
         let prefer_graphics =
             matches!(task.kind, ucf_ir::TaskKind::Raster | ucf_ir::TaskKind::RtTrace);
 
@@ -43,7 +51,9 @@ impl Scheduler {
             .iter()
             .position(|b| {
                 if prefer_cuda {
-                    b.name().contains("cuda")
+                    b.name().contains("cuda") || b.name() == "cpu"
+                } else if prefer_cpu {
+                    b.name() == "cpu"
                 } else if prefer_graphics {
                     b.name().contains("dx") || b.name().contains("vulkan")
                 } else {
