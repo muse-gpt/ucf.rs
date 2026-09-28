@@ -29,6 +29,7 @@ pub struct CudaBackend {
     driver: CudaDriver,
     buffers: BTreeMap<ResourceId, DeviceBuffer>,
     imported: BTreeMap<ImportedBufferId, ImportedBuffer>,
+    resource_imports: BTreeMap<ResourceId, ImportedBufferId>,
     next_imported: u64,
 }
 
@@ -40,6 +41,7 @@ impl CudaBackend {
             driver,
             buffers: BTreeMap::new(),
             imported: BTreeMap::new(),
+            resource_imports: BTreeMap::new(),
             next_imported: 1,
         })
     }
@@ -65,6 +67,26 @@ impl CudaBackend {
             },
         );
         Ok(id)
+    }
+
+    /// Bind an imported buffer to a graph [`ResourceId`] (skipped by [`prepare`]).
+    pub fn bind_imported(&mut self, resource: ResourceId, imported: ImportedBufferId) -> Result<()> {
+        let buf = self.imported.get(&imported).ok_or_else(|| {
+            map_backend_err(BackendError(format!(
+                "imported buffer {} not allocated",
+                imported.0
+            )))
+        })?;
+        if let Some(existing) = self.buffers.get(&resource) {
+            if existing.bytes != buf.bytes {
+                return Err(map_backend_err(BackendError(format!(
+                    "resource {} size mismatch for import bind",
+                    resource.0
+                ))));
+            }
+        }
+        self.resource_imports.insert(resource, imported);
+        Ok(())
     }
 
     /// Download an imported DX12-shared buffer as `f32` values.
@@ -138,10 +160,22 @@ impl CudaBackend {
     }
 
     fn ptr(&self, id: ResourceId) -> Result<(CUdeviceptr, usize)> {
-        self.buffers
-            .get(&id)
-            .map(|b| (b.ptr, b.bytes))
-            .ok_or_else(|| map_backend_err(BackendError(format!("resource {} not allocated", id.0))))
+        if let Some(buf) = self.buffers.get(&id) {
+            return Ok((buf.ptr, buf.bytes));
+        }
+        if let Some(imp) = self.resource_imports.get(&id) {
+            let buf = self.imported.get(imp).ok_or_else(|| {
+                map_backend_err(BackendError(format!(
+                    "imported buffer {} missing for resource {}",
+                    imp.0, id.0
+                )))
+            })?;
+            return Ok((buf.ptr, buf.bytes));
+        }
+        Err(map_backend_err(BackendError(format!(
+            "resource {} not allocated",
+            id.0
+        ))))
     }
 }
 
@@ -176,6 +210,9 @@ impl Backend for CudaBackend {
 
     fn prepare(&mut self, graph: &Graph) -> Result<()> {
         for node in &graph.resources.nodes {
+            if self.resource_imports.contains_key(&node.id) {
+                continue;
+            }
             let bytes = node.byte_size.ok_or_else(|| {
                 map_backend_err(BackendError(format!(
                     "resource {} needs byte_size for cuda backend",
@@ -215,6 +252,10 @@ impl Backend for CudaBackend {
                 "cuda backend does not implement {other:?}"
             )))),
         }
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        self.driver.synchronize().map_err(map_driver_err)
     }
 }
 
