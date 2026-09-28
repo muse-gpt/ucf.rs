@@ -34,6 +34,9 @@ pub use ucf_scheduler::{
 };
 pub use ucf_runtime::{dry_run, CapacityPolicy, Runtime};
 
+#[cfg(feature = "cpu")]
+pub use ucf_backend_cpu as backend_cpu;
+
 #[cfg(feature = "cuda")]
 pub use ucf_backend_cuda as backend_cuda;
 
@@ -48,6 +51,9 @@ pub mod prelude {
         Priority, ResourceGraph, ResourceId, ResourceKind, ResourceNode, Runtime, Scheduler,
         ShaderId, TaskGraph, TaskId, TaskKind, TaskNode,
     };
+
+    #[cfg(feature = "cpu")]
+    pub use crate::backend_cpu::{shared_store, CpuBackend, HostStore};
 
     #[cfg(feature = "cuda")]
     pub use crate::backend_cuda::CudaBackend;
