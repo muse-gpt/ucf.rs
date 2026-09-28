@@ -1,5 +1,14 @@
 use ucf_types::{ShaderOp, ShaderProgram};
 
+/// VS + PS DXBC for the Raster triangle thin gate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RasterTriDxbc {
+    /// Vertex shader bytecode (`vs_5_0`).
+    pub vs: Vec<u8>,
+    /// Pixel shader bytecode (`ps_5_0`).
+    pub ps: Vec<u8>,
+}
+
 /// Emit DXBC compute bytecode (`cs_5_1`) for the given UCF program.
 ///
 /// On Windows this compiles built-in HLSL through the system `d3dcompiler`.
@@ -9,14 +18,44 @@ pub fn emit_dxil(program: &ShaderProgram) -> Result<Vec<u8>, String> {
         match op {
             ShaderOp::MemCopy => continue,
             ShaderOp::IotaFill { value } => {
-                return compile_cs(&hlsl_fill(&program.entry, *value), &program.entry);
+                return compile_shader(&hlsl_fill(&program.entry, *value), &program.entry, "cs_5_1");
             }
             ShaderOp::MatMul => {
-                return compile_cs(&hlsl_matmul(&program.entry), &program.entry);
+                return compile_shader(&hlsl_matmul(&program.entry), &program.entry, "cs_5_1");
             }
         }
     }
     Err("program has no emittable DXIL ops".into())
+}
+
+/// Emit a hard-coded NDC triangle VS/PS pair (yellow solid) for Raster `draw=tri`.
+pub fn emit_raster_tri_dxbc() -> Result<RasterTriDxbc, String> {
+    let hlsl = r#"
+struct VSOut {
+    float4 pos : SV_Position;
+    float4 col : COLOR0;
+};
+
+VSOut vs_main(uint vid : SV_VertexID) {
+    float2 verts[3] = {
+        float2(-0.8, -0.8),
+        float2( 0.8, -0.8),
+        float2( 0.0,  0.8)
+    };
+    VSOut o;
+    o.pos = float4(verts[vid], 0.0, 1.0);
+    o.col = float4(1.0, 1.0, 0.0, 1.0);
+    return o;
+}
+
+float4 ps_main(VSOut i) : SV_Target0 {
+    return i.col;
+}
+"#;
+    Ok(RasterTriDxbc {
+        vs: compile_shader(hlsl, "vs_main", "vs_5_0")?,
+        ps: compile_shader(hlsl, "ps_main", "ps_5_0")?,
+    })
 }
 
 fn hlsl_fill(entry: &str, value: f32) -> String {
@@ -73,14 +112,14 @@ void {entry}(uint3 dtid : SV_DispatchThreadID) {{
 }
 
 #[cfg(windows)]
-fn compile_cs(hlsl: &str, entry: &str) -> Result<Vec<u8>, String> {
+fn compile_shader(hlsl: &str, entry: &str, target: &str) -> Result<Vec<u8>, String> {
     use windows::core::PCSTR;
     use windows::Win32::Graphics::Direct3D::Fxc::{D3DCompile, D3DCOMPILE_OPTIMIZATION_LEVEL3};
     use windows::Win32::Graphics::Direct3D::ID3DBlob;
 
     let source = hlsl.as_bytes();
     let entry_c = std::ffi::CString::new(entry).map_err(|e| e.to_string())?;
-    let target = windows::core::s!("cs_5_1");
+    let target_c = std::ffi::CString::new(target).map_err(|e| e.to_string())?;
     let mut code: Option<ID3DBlob> = None;
     let mut errors: Option<ID3DBlob> = None;
     let result = unsafe {
@@ -91,7 +130,7 @@ fn compile_cs(hlsl: &str, entry: &str) -> Result<Vec<u8>, String> {
             None,
             None,
             PCSTR(entry_c.as_ptr().cast()),
-            target,
+            PCSTR(target_c.as_ptr().cast()),
             D3DCOMPILE_OPTIMIZATION_LEVEL3,
             0,
             &mut code,
@@ -107,7 +146,7 @@ fn compile_cs(hlsl: &str, entry: &str) -> Result<Vec<u8>, String> {
                 String::from_utf8_lossy(std::slice::from_raw_parts(ptr, len)).into_owned()
             })
             .unwrap_or_else(|| err.message());
-        return Err(format!("D3DCompile failed for `{entry}`: {detail}"));
+        return Err(format!("D3DCompile failed for `{entry}` ({target}): {detail}"));
     }
     let code = code.ok_or_else(|| "D3DCompile returned null bytecode".to_string())?;
     unsafe {
@@ -118,7 +157,7 @@ fn compile_cs(hlsl: &str, entry: &str) -> Result<Vec<u8>, String> {
 }
 
 #[cfg(not(windows))]
-fn compile_cs(_hlsl: &str, _entry: &str) -> Result<Vec<u8>, String> {
+fn compile_shader(_hlsl: &str, _entry: &str, _target: &str) -> Result<Vec<u8>, String> {
     Err("DXBC emission requires Windows d3dcompiler".into())
 }
 
@@ -135,5 +174,14 @@ mod tests {
         let matmul = emit_dxil(&ShaderProgram::matmul("ucf_matmul")).expect("matmul");
         assert!(matmul.len() > 32);
         assert_eq!(&matmul[0..4], b"DXBC");
+    }
+
+    #[test]
+    fn emit_raster_tri_vs_ps_dxbc() {
+        let tri = emit_raster_tri_dxbc().expect("tri");
+        assert!(tri.vs.len() > 32);
+        assert!(tri.ps.len() > 32);
+        assert_eq!(&tri.vs[0..4], b"DXBC");
+        assert_eq!(&tri.ps[0..4], b"DXBC");
     }
 }

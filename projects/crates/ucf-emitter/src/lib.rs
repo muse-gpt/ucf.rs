@@ -7,7 +7,7 @@ mod ptx;
 mod spirv;
 mod task;
 
-pub use dxil::emit_dxil;
+pub use dxil::{emit_dxil, emit_raster_tri_dxbc, RasterTriDxbc};
 pub use hip::emit_hip;
 pub use ptx::emit_ptx;
 pub use spirv::emit_spirv;
