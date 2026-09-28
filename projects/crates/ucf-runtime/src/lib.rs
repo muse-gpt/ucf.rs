@@ -1,3 +1,6 @@
+//! UCF runtime: backend registration and graph execution.
+#![warn(missing_docs)]
+
 mod capacity;
 mod runtime;
 

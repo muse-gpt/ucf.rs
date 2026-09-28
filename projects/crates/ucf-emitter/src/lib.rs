@@ -1,4 +1,5 @@
 //! Built-in shader emitter: UCF `ShaderProgram` → PTX / DXIL bytes.
+#![warn(missing_docs)]
 
 mod dxil;
 mod ptx;

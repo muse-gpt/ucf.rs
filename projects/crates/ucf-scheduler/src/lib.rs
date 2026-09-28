@@ -1,3 +1,6 @@
+//! Task scheduler and [`Backend`] trait.
+#![warn(missing_docs)]
+
 mod backend;
 mod error;
 mod noop;

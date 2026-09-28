@@ -1,7 +1,7 @@
 [package]
 name = "ucf"
-description = "Unified Compute Fabric — public facade"
-readme = "README.md"
+description = "Unified Compute Fabric - public facade"
+readme = "readme.md"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -20,8 +20,8 @@ ucf-capability = { workspace = true }
 ucf-optimize = { workspace = true }
 ucf-scheduler = { workspace = true }
 ucf-runtime = { workspace = true }
-ucf-backend-cuda = { path = "../ucf-backends/ucf-backend-cuda", optional = true }
-ucf-backend-dx12 = { path = "../ucf-backends/ucf-backend-dx12", optional = true }
+ucf-backend-cuda = { workspace = true, optional = true }
+ucf-backend-dx12 = { workspace = true, optional = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

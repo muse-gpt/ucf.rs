@@ -1,3 +1,6 @@
+//! Optimization hint descriptors (auto-tune skeleton).
+#![warn(missing_docs)]
+
 mod optimization;
 
 pub use optimization::Optimization;
