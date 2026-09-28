@@ -2,12 +2,14 @@
 #![warn(missing_docs)]
 
 mod backend;
+mod budget;
 mod deadline;
 mod error;
 mod noop;
 mod scheduler;
 
 pub use backend::Backend;
+pub use budget::{fits_120hz_frame, FRAME_BUDGET_120HZ_MICROS};
 pub use deadline::effective_deadlines;
 pub use error::{Error, Result};
 pub use noop::NoopBackend;
