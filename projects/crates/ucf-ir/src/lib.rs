@@ -4,10 +4,12 @@
 //! and validation (unique ids, edge references, topological order).
 #![warn(missing_docs)]
 
+mod binary;
 mod builder;
 mod error;
 mod graph;
 
+pub use binary::{decode, encode, MAGIC, WIRE_MAJOR};
 pub use builder::{chain_edges, GraphBuilder};
 pub use error::{Error, Result};
 pub use graph::{DepEdge, Graph, ResourceGraph, TaskGraph};
