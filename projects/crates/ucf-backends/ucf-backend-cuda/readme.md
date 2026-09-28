@@ -1,7 +1,7 @@
 # ucf-backend-cuda
 
-NVIDIA backend via **CUDA Driver API** (`nvcuda.dll` / `libcuda.so`).
+NVIDIA CUDA Driver API backend (`nvcuda.dll` / `libcuda.so`).
 
-- Dynamic load with `libloading` — no CUDA Toolkit install required for build
-- Kernels from [`ucf-emitter`](../ucf-emitter/) PTX (driver JIT → SASS)
-- No `cudarc`, no CUDA C
+Executes the stage-0 reference path (`Copy` / `Fill` / `MatMul`) on device buffers with host readback. PTX comes from `ucf-emitter` (no CUDA C / nvcc).
+
+Parity vs CPU: `tests/parity_cpu.rs` (soft-skips when no driver).
