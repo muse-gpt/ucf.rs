@@ -27,6 +27,8 @@ pub struct CudaDriver {
     cuMemAlloc: CuMemAlloc,
     cuMemFree: CuMemFree,
     cuMemcpyHtoD: CuMemcpyHtoD,
+    cuMemcpyDtoH: CuMemcpyDtoH,
+    cuMemcpyDtoD: CuMemcpyDtoD,
     cuModuleLoadData: CuModuleLoadData,
     cuModuleUnload: CuModuleUnload,
     cuModuleGetFunction: CuModuleGetFunction,
@@ -56,6 +58,8 @@ impl CudaDriver {
             let cuMemAlloc = load_fn!(lib, cuMemAlloc_v2, CuMemAlloc);
             let cuMemFree = load_fn!(lib, cuMemFree_v2, CuMemFree);
             let cuMemcpyHtoD = load_fn!(lib, cuMemcpyHtoD_v2, CuMemcpyHtoD);
+            let cuMemcpyDtoH = load_fn!(lib, cuMemcpyDtoH_v2, CuMemcpyDtoH);
+            let cuMemcpyDtoD = load_fn!(lib, cuMemcpyDtoD_v2, CuMemcpyDtoD);
             let cuModuleLoadData = load_fn!(lib, cuModuleLoadData, CuModuleLoadData);
             let cuModuleUnload = load_fn!(lib, cuModuleUnload, CuModuleUnload);
             let cuModuleGetFunction = load_fn!(lib, cuModuleGetFunction, CuModuleGetFunction);
@@ -84,6 +88,8 @@ impl CudaDriver {
                 cuMemAlloc,
                 cuMemFree,
                 cuMemcpyHtoD,
+                cuMemcpyDtoH,
+                cuMemcpyDtoD,
                 cuModuleLoadData,
                 cuModuleUnload,
                 cuModuleGetFunction,
@@ -122,6 +128,101 @@ impl CudaDriver {
         Ok(())
     }
 
+    pub fn memcpy_dtoh(&self, dst: &mut [u8], src: CUdeviceptr) -> Result<(), DriverError> {
+        unsafe {
+            check(
+                (self.cuMemcpyDtoH)(dst.as_mut_ptr() as *mut c_void, src, dst.len()),
+                "cuMemcpyDtoH",
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn memcpy_dtod(&self, dst: CUdeviceptr, src: CUdeviceptr, bytes: usize) -> Result<(), DriverError> {
+        unsafe {
+            check((self.cuMemcpyDtoD)(dst, src, bytes), "cuMemcpyDtoD")?;
+        }
+        Ok(())
+    }
+
+    /// Launch a 1D grid kernel with `(u32 count, u64 out_ptr)` parameters (fill kernels).
+    pub fn launch_fill(
+        &self,
+        func: CUfunction,
+        count: u32,
+        out: CUdeviceptr,
+    ) -> Result<(), DriverError> {
+        let block = 256u32;
+        let grid = count.saturating_add(block - 1) / block;
+        let mut count_arg = count;
+        let mut out_arg = out;
+        let mut params: [*mut c_void; 2] = [
+            (&mut count_arg as *mut u32).cast(),
+            (&mut out_arg as *mut CUdeviceptr).cast(),
+        ];
+        self.launch(func, grid, block, &mut params)
+    }
+
+    /// Launch matmul kernel with `(a, b, out, m, n, k)` device/host args.
+    pub fn launch_matmul(
+        &self,
+        func: CUfunction,
+        a: CUdeviceptr,
+        b: CUdeviceptr,
+        out: CUdeviceptr,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) -> Result<(), DriverError> {
+        let total = m.saturating_mul(n).max(1);
+        let block = 256u32;
+        let grid = total.saturating_add(block - 1) / block;
+        let mut a_arg = a;
+        let mut b_arg = b;
+        let mut out_arg = out;
+        let mut m_arg = m;
+        let mut n_arg = n;
+        let mut k_arg = k;
+        let mut params: [*mut c_void; 6] = [
+            (&mut a_arg as *mut CUdeviceptr).cast(),
+            (&mut b_arg as *mut CUdeviceptr).cast(),
+            (&mut out_arg as *mut CUdeviceptr).cast(),
+            (&mut m_arg as *mut u32).cast(),
+            (&mut n_arg as *mut u32).cast(),
+            (&mut k_arg as *mut u32).cast(),
+        ];
+        self.launch(func, grid, block, &mut params)
+    }
+
+    fn launch(
+        &self,
+        func: CUfunction,
+        grid: u32,
+        block: u32,
+        params: &mut [*mut c_void],
+    ) -> Result<(), DriverError> {
+        unsafe {
+            check(
+                (self.cuLaunchKernel)(
+                    func,
+                    grid,
+                    1,
+                    1,
+                    block,
+                    1,
+                    1,
+                    0,
+                    self.stream,
+                    params.as_mut_ptr(),
+                    std::ptr::null_mut(),
+                ),
+                "cuLaunchKernel",
+            )?;
+            check((self.cuStreamSynchronize)(self.stream), "cuStreamSynchronize")?;
+        }
+        Ok(())
+    }
+
     pub fn load_module(&self, ptx: &[u8]) -> Result<CUmodule, DriverError> {
         let mut module: CUmodule = std::ptr::null_mut();
         unsafe {
@@ -150,42 +251,6 @@ impl CudaDriver {
             )?;
         }
         Ok(func)
-    }
-
-    pub fn launch_iota_fill(
-        &self,
-        func: CUfunction,
-        count: u32,
-        out: CUdeviceptr,
-    ) -> Result<(), DriverError> {
-        let block = 256u32;
-        let grid = (count + block - 1) / block;
-        let mut count_arg = count;
-        let mut out_arg = out;
-        let mut params: [*mut c_void; 2] = [
-            (&mut count_arg as *mut u32).cast(),
-            (&mut out_arg as *mut CUdeviceptr).cast(),
-        ];
-        unsafe {
-            check(
-                (self.cuLaunchKernel)(
-                    func,
-                    grid,
-                    1,
-                    1,
-                    block,
-                    1,
-                    1,
-                    0,
-                    self.stream,
-                    params.as_mut_ptr(),
-                    std::ptr::null_mut(),
-                ),
-                "cuLaunchKernel",
-            )?;
-            check((self.cuStreamSynchronize)(self.stream), "cuStreamSynchronize")?;
-        }
-        Ok(())
     }
 
     pub fn synchronize(&self) -> Result<(), DriverError> {
