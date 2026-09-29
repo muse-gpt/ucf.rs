@@ -46,6 +46,10 @@ pub struct CudaDriver {
     cuImportExternalMemory: CuImportExternalMemory,
     cuExternalMemoryGetMappedBuffer: CuExternalMemoryGetMappedBuffer,
     cuDestroyExternalMemory: CuDestroyExternalMemory,
+    cuEventCreate: CuEventCreate,
+    cuEventDestroy: CuEventDestroy,
+    cuEventRecord: CuEventRecord,
+    cuStreamWaitEvent: CuStreamWaitEvent,
     context: CUcontext,
     stream: CUstream,
 }
@@ -94,6 +98,10 @@ impl CudaDriver {
             );
             let cuDestroyExternalMemory =
                 load_fn!(lib, cuDestroyExternalMemory, CuDestroyExternalMemory);
+            let cuEventCreate = load_fn!(lib, cuEventCreate, CuEventCreate);
+            let cuEventDestroy = load_fn!(lib, cuEventDestroy, CuEventDestroy);
+            let cuEventRecord = load_fn!(lib, cuEventRecord, CuEventRecord);
+            let cuStreamWaitEvent = load_fn!(lib, cuStreamWaitEvent, CuStreamWaitEvent);
 
             check((cuInit)(0), "cuInit")?;
 
@@ -134,10 +142,19 @@ impl CudaDriver {
                 cuImportExternalMemory,
                 cuExternalMemoryGetMappedBuffer,
                 cuDestroyExternalMemory,
+                cuEventCreate,
+                cuEventDestroy,
+                cuEventRecord,
+                cuStreamWaitEvent,
                 context,
                 stream,
             })
         }
+    }
+
+    /// Default submission stream owned by this driver.
+    pub fn stream(&self) -> CUstream {
+        self.stream
     }
 
     pub fn mem_alloc(&self, bytes: usize) -> Result<CUdeviceptr, DriverError> {
@@ -522,6 +539,35 @@ impl CudaDriver {
             check(
                 (self.cuDestroyExternalMemory)(ext),
                 "cuDestroyExternalMemory",
+            )
+        }
+    }
+
+    pub fn event_create(&self) -> Result<CUevent, DriverError> {
+        let mut event: CUevent = std::ptr::null_mut();
+        unsafe {
+            check((self.cuEventCreate)(&mut event, 0), "cuEventCreate")?;
+        }
+        Ok(event)
+    }
+
+    pub fn event_destroy(&self, event: CUevent) -> Result<(), DriverError> {
+        unsafe {
+            check((self.cuEventDestroy)(event), "cuEventDestroy")
+        }
+    }
+
+    pub fn event_record(&self, event: CUevent, stream: CUstream) -> Result<(), DriverError> {
+        unsafe {
+            check((self.cuEventRecord)(event, stream), "cuEventRecord")
+        }
+    }
+
+    pub fn stream_wait_event(&self, stream: CUstream, event: CUevent) -> Result<(), DriverError> {
+        unsafe {
+            check(
+                (self.cuStreamWaitEvent)(stream, event, 0),
+                "cuStreamWaitEvent",
             )
         }
     }

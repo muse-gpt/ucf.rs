@@ -14,4 +14,5 @@ use ucf::prelude::*;
 
 Reference contract: `tests/application_contract.rs` encodes a graph, opens `CpuSession`, then `prepare → write → run_prepared → flush → readback`.
 External bindings: `tests/external_bindings_cpu.rs` binds host buffers and an immediate stream before the same lifecycle.
+CUDA external bindings: `tests/cuda_external_bindings.rs` (soft-skip without `nvcuda`) binds device buffers, the default stream, and CUDA events around MatMul.
 The older `tests/ucf_bytes_cpu.rs` path remains as a lower-level encode/decode + `Runtime::run` check.

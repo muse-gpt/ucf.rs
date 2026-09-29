@@ -4,18 +4,26 @@ use std::hash::{Hash, Hasher};
 use ucf_capability::{Feature, FeatureSet};
 use ucf_emitter::{emit_ptx, program_from_task};
 use ucf_ir::{Graph, TaskKind, TaskNode};
-use ucf_scheduler::{Backend, Error as SchedulerError, Result};
+use ucf_scheduler::{
+    Backend, Error as SchedulerError, ExecStream, ExecutionBindings, ExternalBuffer, Result,
+    StreamEventBridge,
+};
 use ucf_types::ResourceId;
 
 use crate::driver::{
-    CudaDriver, CUdeviceptr, CUexternalMemory, CUfunction, CUgraph, CUgraphExec, CUmodule,
+    CudaDriver, CUdeviceptr, CUevent, CUexternalMemory, CUfunction, CUgraph, CUgraphExec, CUmodule,
     DriverError,
+};
+use crate::external::{
+    CudaExecEvent, CudaExecStream, CudaExternalBuffer, CudaStreamEventBridge,
 };
 use crate::params::{f32_param, resource_param, u32_param, BackendError};
 
 struct DeviceBuffer {
     ptr: CUdeviceptr,
     bytes: usize,
+    /// When false, Drop must not `cuMemFree` (adapter / external-owned).
+    owned: bool,
 }
 
 struct ImportedBuffer {
@@ -50,6 +58,11 @@ pub struct CudaBackend {
     module_cache: BTreeMap<u64, CachedCudaModule>,
     module_cache_hits: u64,
     module_cache_misses: u64,
+    /// Device allocations created via [`Self::allocate_external_buffer`] (freed on Drop).
+    external_owned: Vec<CUdeviceptr>,
+    /// Events created via [`Self::create_event`] (destroyed on Drop).
+    events_owned: Vec<CUevent>,
+    preferred_stream: Option<std::sync::Arc<dyn ExecStream>>,
 }
 
 impl CudaBackend {
@@ -65,7 +78,43 @@ impl CudaBackend {
             module_cache: BTreeMap::new(),
             module_cache_hits: 0,
             module_cache_misses: 0,
+            external_owned: Vec::new(),
+            events_owned: Vec::new(),
+            preferred_stream: None,
         })
+    }
+
+    /// Default CUDA stream wrapped as [`CudaExecStream`] (same stream used for submits today).
+    pub fn default_stream(&self) -> std::sync::Arc<CudaExecStream> {
+        CudaExecStream::from_raw(self.driver.stream())
+    }
+
+    /// Allocate a device buffer for external binding (backend frees on Drop).
+    pub fn allocate_external_buffer(
+        &mut self,
+        byte_size: u64,
+    ) -> Result<std::sync::Arc<CudaExternalBuffer>> {
+        let bytes = byte_size as usize;
+        let ptr = self.driver.mem_alloc(bytes).map_err(map_driver_err)?;
+        let zeros = vec![0u8; bytes];
+        if let Err(err) = self.driver.memcpy_htod(ptr, &zeros) {
+            let _ = self.driver.mem_free(ptr);
+            return Err(map_driver_err(err));
+        }
+        self.external_owned.push(ptr);
+        Ok(CudaExternalBuffer::from_device_ptr(ptr, byte_size))
+    }
+
+    /// Create a CUDA event for [`CudaStreamEventBridge`] waits.
+    pub fn create_event(&mut self) -> Result<std::sync::Arc<CudaExecEvent>> {
+        let event = self.driver.event_create().map_err(map_driver_err)?;
+        self.events_owned.push(event);
+        Ok(CudaExecEvent::from_raw(event))
+    }
+
+    /// Stream/event bridge for this backend's driver.
+    pub fn stream_event_bridge(&self) -> CudaStreamEventBridge<'_> {
+        CudaStreamEventBridge::new(&self.driver)
     }
 
     /// Stream-path module cache hits (thin-gate counters).
@@ -633,7 +682,17 @@ impl Drop for CudaBackend {
         }
         let buffers = std::mem::take(&mut self.buffers);
         for (_, buf) in buffers {
-            let _ = self.driver.mem_free(buf.ptr);
+            if buf.owned {
+                let _ = self.driver.mem_free(buf.ptr);
+            }
+        }
+        let external_owned = std::mem::take(&mut self.external_owned);
+        for ptr in external_owned {
+            let _ = self.driver.mem_free(ptr);
+        }
+        let events_owned = std::mem::take(&mut self.events_owned);
+        for event in events_owned {
+            let _ = self.driver.event_destroy(event);
         }
     }
 }
@@ -652,6 +711,74 @@ impl Backend for CudaBackend {
             .with(Feature::CudaGraph)
             .with(Feature::UnifiedMemory)
             .with(Feature::DynamicParallelism)
+    }
+
+    fn bind_externals(&mut self, bindings: &ExecutionBindings) -> Result<()> {
+        for (id, buf) in &bindings.buffers {
+            if buf.backend_name() != "cuda" {
+                return Err(SchedulerError::Backend(
+                    "cuda".into(),
+                    format!(
+                        "external buffer for resource {} has backend `{}`, expected `cuda`",
+                        id.0,
+                        buf.backend_name()
+                    ),
+                ));
+            }
+            let host = buf.as_any().downcast_ref::<CudaExternalBuffer>().ok_or_else(|| {
+                SchedulerError::Backend(
+                    "cuda".into(),
+                    format!(
+                        "external buffer for resource {} is not a CudaExternalBuffer",
+                        id.0
+                    ),
+                )
+            })?;
+            let bytes = host.byte_size() as usize;
+            if let Some(existing) = self.buffers.get(id) {
+                if existing.bytes != bytes || existing.ptr != host.device_ptr() {
+                    return Err(map_backend_err(BackendError(format!(
+                        "resource {} already allocated incompatibly with external bind",
+                        id.0
+                    ))));
+                }
+            } else {
+                self.buffers.insert(
+                    *id,
+                    DeviceBuffer {
+                        ptr: host.device_ptr(),
+                        bytes,
+                        owned: false,
+                    },
+                );
+            }
+        }
+        if let Some(stream) = &bindings.stream {
+            if stream.backend_name() != "cuda" {
+                return Err(SchedulerError::Backend(
+                    "cuda".into(),
+                    format!(
+                        "preferred stream backend `{}` is not `cuda`",
+                        stream.backend_name()
+                    ),
+                ));
+            }
+            let cuda_stream = stream.as_any().downcast_ref::<CudaExecStream>().ok_or_else(|| {
+                SchedulerError::Backend(
+                    "cuda".into(),
+                    "preferred stream is not a CudaExecStream".into(),
+                )
+            })?;
+            // First cut: only the backend-owned default stream is accepted.
+            if cuda_stream.raw() != self.driver.stream() {
+                return Err(SchedulerError::Backend(
+                    "cuda".into(),
+                    "preferred CudaExecStream must be this backend's default stream (foreign streams land with multi-stream driver work)".into(),
+                ));
+            }
+            self.preferred_stream = Some(std::sync::Arc::clone(stream));
+        }
+        Ok(())
     }
 
     fn prepare(&mut self, graph: &Graph) -> Result<()> {
@@ -680,8 +807,14 @@ impl Backend for CudaBackend {
                 let _ = self.driver.mem_free(ptr);
                 return Err(map_driver_err(err));
             }
-            self.buffers
-                .insert(node.id, DeviceBuffer { ptr, bytes });
+            self.buffers.insert(
+                node.id,
+                DeviceBuffer {
+                    ptr,
+                    bytes,
+                    owned: true,
+                },
+            );
         }
         Ok(())
     }
@@ -704,6 +837,17 @@ impl Backend for CudaBackend {
 
     fn flush(&mut self) -> Result<()> {
         self.driver.synchronize().map_err(map_driver_err)
+    }
+
+    fn stream_bridge(&self) -> Option<&dyn StreamEventBridge> {
+        // Lifetime: bridge borrows driver; Backend trait wants &dyn with backend lifetime.
+        // We cannot return a temporary CudaStreamEventBridge. Adapters should call
+        // `stream_event_bridge()` for a scoped bridge. Default None here.
+        None
+    }
+
+    fn active_stream(&self) -> Option<&dyn ExecStream> {
+        self.preferred_stream.as_deref()
     }
 }
 
