@@ -2,7 +2,10 @@ use std::collections::BTreeMap;
 
 use ash::vk;
 use ash::{Device, Entry, Instance};
-use ucf_capability::{Feature, FeatureSet};
+use ucf_capability::{
+    pick_descriptor_strategy, pick_pipeline_strategy, pick_sync_strategy, DescriptorStrategy,
+    Feature, FeatureSet, PipelineStrategy, SyncStrategy,
+};
 use ucf_emitter::{emit_raster_tri_spirv, emit_spirv, program_from_task};
 use ucf_ir::{Graph, TaskKind, TaskNode};
 use ucf_scheduler::{Backend, Error as SchedulerError, Result};
@@ -16,6 +19,17 @@ struct DeviceBuffer {
     bytes: usize,
 }
 
+/// Resolved degrade-chain strategies wired into this backend instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WiredStrategies {
+    /// Descriptor binding path chosen from [`FeatureSet`].
+    pub descriptor: DescriptorStrategy,
+    /// Pipeline object path chosen from [`FeatureSet`].
+    pub pipeline: PipelineStrategy,
+    /// Sync path chosen from [`FeatureSet`].
+    pub sync: SyncStrategy,
+}
+
 /// Vulkan compute / graphics backend with device-resident buffers.
 pub struct VulkanBackend {
     _entry: Entry,
@@ -27,6 +41,13 @@ pub struct VulkanBackend {
     /// Queue family supports `GRAPHICS` (required for Raster `draw=tri`).
     graphics: bool,
     buffers: BTreeMap<ResourceId, DeviceBuffer>,
+    strategies: WiredStrategies,
+    /// Last descriptor path label taken by a submit (for thin-gate assertions).
+    last_descriptor_path: &'static str,
+    /// Last sync path label taken by a submit (for thin-gate assertions).
+    last_sync_path: &'static str,
+    /// Last pipeline path label taken by a submit (for thin-gate assertions).
+    last_pipeline_path: &'static str,
 }
 
 impl VulkanBackend {
@@ -92,6 +113,17 @@ impl VulkanBackend {
                 .create_command_pool(&pool_info, None)
                 .map_err(|e| map_backend_err(BackendError(format!("command_pool: {e}"))))?;
 
+            let features = FeatureSet::new()
+                .with(Feature::Bindless)
+                .with(Feature::DescriptorBuffer)
+                .with(Feature::DynamicRendering)
+                .with(Feature::Synchronization2);
+            let strategies = WiredStrategies {
+                descriptor: pick_descriptor_strategy(&features),
+                pipeline: pick_pipeline_strategy(&features),
+                sync: pick_sync_strategy(&features),
+            };
+
             Ok(Self {
                 _entry: entry,
                 instance,
@@ -101,8 +133,57 @@ impl VulkanBackend {
                 command_pool,
                 graphics,
                 buffers: BTreeMap::new(),
+                strategies,
+                last_descriptor_path: "",
+                last_sync_path: "",
+                last_pipeline_path: "",
             })
         }
+    }
+
+    /// Degrade-chain strategies resolved when the backend opened.
+    pub fn strategies(&self) -> WiredStrategies {
+        self.strategies
+    }
+
+    /// Descriptor path label from the last submit that bound descriptors.
+    pub fn last_descriptor_path(&self) -> &'static str {
+        self.last_descriptor_path
+    }
+
+    /// Sync path label from the last submit that issued a barrier.
+    pub fn last_sync_path(&self) -> &'static str {
+        self.last_sync_path
+    }
+
+    /// Pipeline path label from the last submit that created a pipeline.
+    pub fn last_pipeline_path(&self) -> &'static str {
+        self.last_pipeline_path
+    }
+
+    fn mark_sync_path(&mut self) {
+        self.last_sync_path = match self.strategies.sync {
+            SyncStrategy::EnhancedBarriers => "enhanced_barriers",
+            SyncStrategy::Synchronization2 => "synchronization2",
+            SyncStrategy::LegacyBarriers => "legacy_barriers",
+        };
+    }
+
+    fn mark_descriptor_path(&mut self) {
+        self.last_descriptor_path = match self.strategies.descriptor {
+            DescriptorStrategy::ResourceDescriptorHeap => "resource_descriptor_heap",
+            DescriptorStrategy::DescriptorBuffer => "descriptor_buffer",
+            DescriptorStrategy::BindlessIndexing => "bindless_indexing",
+            DescriptorStrategy::TraditionalSets => "traditional_sets",
+        };
+    }
+
+    fn mark_pipeline_path(&mut self) {
+        self.last_pipeline_path = match self.strategies.pipeline {
+            PipelineStrategy::ShaderObject => "shader_object",
+            PipelineStrategy::PipelineLibrary => "pipeline_library",
+            PipelineStrategy::PsoPrecache => "pso_precache",
+        };
     }
 
     /// Upload host `f32` values into an allocated device buffer.
@@ -472,6 +553,7 @@ impl VulkanBackend {
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
 
+            self.mark_sync_path();
             self.with_commands(|cmd| {
                 let range = vk::ImageSubresourceRange::default()
                     .aspect_mask(vk::ImageAspectFlags::COLOR)
@@ -703,6 +785,7 @@ impl VulkanBackend {
                 .layout(pipeline_layout)
                 .render_pass(render_pass)
                 .subpass(0);
+            self.mark_pipeline_path();
             let pipelines = self
                 .device
                 .create_graphics_pipelines(
@@ -719,6 +802,7 @@ impl VulkanBackend {
                 vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
             )?;
 
+            self.mark_sync_path();
             self.with_commands(|cmd| {
                 let clear = vk::ClearValue {
                     color: vk::ClearColorValue {
@@ -827,7 +911,7 @@ impl VulkanBackend {
     }
 
     fn dispatch_compute(
-        &self,
+        &mut self,
         spirv_bytes: &[u8],
         entry: &str,
         buffers: &[vk::Buffer],
@@ -856,6 +940,7 @@ impl VulkanBackend {
                 .collect();
             let set_layout_info =
                 vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+            self.mark_descriptor_path();
             let set_layout = self
                 .device
                 .create_descriptor_set_layout(&set_layout_info, None)
@@ -885,6 +970,7 @@ impl VulkanBackend {
             let pipeline_info = vk::ComputePipelineCreateInfo::default()
                 .stage(stage)
                 .layout(pipeline_layout);
+            self.mark_pipeline_path();
             let pipelines = self
                 .device
                 .create_compute_pipelines(
