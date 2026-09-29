@@ -62,6 +62,8 @@ pub struct CudaBackend {
     external_owned: Vec<CUdeviceptr>,
     /// Events created via [`Self::create_event`] (destroyed on Drop).
     events_owned: Vec<CUevent>,
+    /// Extra streams from [`Self::create_exec_stream`] (destroyed on Drop).
+    streams_owned: Vec<crate::driver::CUstream>,
     preferred_stream: Option<std::sync::Arc<dyn ExecStream>>,
 }
 
@@ -80,13 +82,21 @@ impl CudaBackend {
             module_cache_misses: 0,
             external_owned: Vec::new(),
             events_owned: Vec::new(),
+            streams_owned: Vec::new(),
             preferred_stream: None,
         })
     }
 
-    /// Default CUDA stream wrapped as [`CudaExecStream`] (same stream used for submits today).
+    /// Default CUDA stream wrapped as [`CudaExecStream`] (same stream used when no override).
     pub fn default_stream(&self) -> std::sync::Arc<CudaExecStream> {
         CudaExecStream::from_raw(self.driver.stream())
+    }
+
+    /// Create an additional CUDA stream for adapter-style bindings (destroyed with backend).
+    pub fn create_exec_stream(&mut self) -> Result<std::sync::Arc<CudaExecStream>> {
+        let raw = self.driver.create_stream().map_err(map_driver_err)?;
+        self.streams_owned.push(raw);
+        Ok(CudaExecStream::from_raw(raw))
     }
 
     /// Allocate a device buffer for external binding (backend frees on Drop).
@@ -694,6 +704,11 @@ impl Drop for CudaBackend {
         for event in events_owned {
             let _ = self.driver.event_destroy(event);
         }
+        let streams_owned = std::mem::take(&mut self.streams_owned);
+        for stream in streams_owned {
+            let _ = self.driver.destroy_stream(stream);
+        }
+        self.driver.set_override_stream(None);
     }
 }
 
@@ -769,13 +784,9 @@ impl Backend for CudaBackend {
                     "preferred stream is not a CudaExecStream".into(),
                 )
             })?;
-            // First cut: only the backend-owned default stream is accepted.
-            if cuda_stream.raw() != self.driver.stream() {
-                return Err(SchedulerError::Backend(
-                    "cuda".into(),
-                    "preferred CudaExecStream must be this backend's default stream (foreign streams land with multi-stream driver work)".into(),
-                ));
-            }
+            // Foreign adapter streams are accepted; driver routes submits via override.
+            self.driver
+                .set_override_stream(Some(cuda_stream.raw()));
             self.preferred_stream = Some(std::sync::Arc::clone(stream));
         }
         Ok(())
