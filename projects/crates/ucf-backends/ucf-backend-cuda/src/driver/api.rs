@@ -29,6 +29,7 @@ pub struct CudaDriver {
     cuMemcpyHtoD: CuMemcpyHtoD,
     cuMemcpyDtoH: CuMemcpyDtoH,
     cuMemcpyDtoD: CuMemcpyDtoD,
+    cuMemcpyDtoDAsync: CuMemcpyDtoDAsync,
     cuModuleLoadData: CuModuleLoadData,
     cuModuleUnload: CuModuleUnload,
     cuModuleGetFunction: CuModuleGetFunction,
@@ -69,6 +70,7 @@ impl CudaDriver {
             let cuMemcpyHtoD = load_fn!(lib, cuMemcpyHtoD_v2, CuMemcpyHtoD);
             let cuMemcpyDtoH = load_fn!(lib, cuMemcpyDtoH_v2, CuMemcpyDtoH);
             let cuMemcpyDtoD = load_fn!(lib, cuMemcpyDtoD_v2, CuMemcpyDtoD);
+            let cuMemcpyDtoDAsync = load_fn!(lib, cuMemcpyDtoDAsync_v2, CuMemcpyDtoDAsync);
             let cuModuleLoadData = load_fn!(lib, cuModuleLoadData, CuModuleLoadData);
             let cuModuleUnload = load_fn!(lib, cuModuleUnload, CuModuleUnload);
             let cuModuleGetFunction = load_fn!(lib, cuModuleGetFunction, CuModuleGetFunction);
@@ -115,6 +117,7 @@ impl CudaDriver {
                 cuMemcpyHtoD,
                 cuMemcpyDtoH,
                 cuMemcpyDtoD,
+                cuMemcpyDtoDAsync,
                 cuModuleLoadData,
                 cuModuleUnload,
                 cuModuleGetFunction,
@@ -179,6 +182,22 @@ impl CudaDriver {
         Ok(())
     }
 
+    /// Device-to-device copy on the owned stream (for CUDA Graph capture).
+    pub fn memcpy_dtod_async(
+        &self,
+        dst: CUdeviceptr,
+        src: CUdeviceptr,
+        bytes: usize,
+    ) -> Result<(), DriverError> {
+        unsafe {
+            check(
+                (self.cuMemcpyDtoDAsync)(dst, src, bytes, self.stream),
+                "cuMemcpyDtoDAsync",
+            )?;
+        }
+        Ok(())
+    }
+
     /// Launch a 1D grid kernel with `(u32 count, u64 out_ptr)` parameters (fill kernels).
     pub fn launch_fill(
         &self,
@@ -228,6 +247,34 @@ impl CudaDriver {
         n: u32,
         k: u32,
     ) -> Result<(), DriverError> {
+        self.launch_matmul_on_stream(func, a, b, out, m, n, k, true)
+    }
+
+    /// Launch matmul without synchronizing (for stream capture into a CUDA Graph).
+    pub fn launch_matmul_async(
+        &self,
+        func: CUfunction,
+        a: CUdeviceptr,
+        b: CUdeviceptr,
+        out: CUdeviceptr,
+        m: u32,
+        n: u32,
+        k: u32,
+    ) -> Result<(), DriverError> {
+        self.launch_matmul_on_stream(func, a, b, out, m, n, k, false)
+    }
+
+    fn launch_matmul_on_stream(
+        &self,
+        func: CUfunction,
+        a: CUdeviceptr,
+        b: CUdeviceptr,
+        out: CUdeviceptr,
+        m: u32,
+        n: u32,
+        k: u32,
+        sync: bool,
+    ) -> Result<(), DriverError> {
         let total = m.saturating_mul(n).max(1);
         let block = 256u32;
         let grid = total.saturating_add(block - 1) / block;
@@ -245,7 +292,7 @@ impl CudaDriver {
             (&mut n_arg as *mut u32).cast(),
             (&mut k_arg as *mut u32).cast(),
         ];
-        self.launch(func, grid, block, &mut params, true)
+        self.launch(func, grid, block, &mut params, sync)
     }
 
     /// Launch RGBA8 denoise: `(src, out, width, height)`.

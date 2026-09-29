@@ -169,27 +169,55 @@ impl CudaBackend {
         Ok(())
     }
 
-    /// Capture a Fill-only TaskGraph into a CUDA Graph, instantiate, and launch once.
+    /// Capture a Copy/Fill/MatMul TaskGraph into a CUDA Graph, instantiate, and launch once.
     ///
-    /// Thin-gate subset: every task must be [`TaskKind::Fill`]. Modules stay loaded for
-    /// the lifetime of the capture (kernel nodes reference them).
+    /// Thin-gate subset: every task must be [`TaskKind::Copy`], [`TaskKind::Fill`], or
+    /// [`TaskKind::MatMul`]. Modules stay loaded for the lifetime of the capture.
     pub fn run_prepared_cuda_graph(&mut self, graph: &Graph) -> Result<()> {
         graph.validate().map_err(SchedulerError::from)?;
         let order = graph.tasks.topological_order().map_err(SchedulerError::from)?;
         if order.is_empty() {
             return Err(map_backend_err(BackendError(
-                "cuda graph thin gate needs at least one Fill task".into(),
+                "cuda graph thin gate needs at least one Copy/Fill/MatMul task".into(),
             )));
         }
 
-        struct LoadedFill {
-            module: CUmodule,
-            func: CUfunction,
-            count: u32,
-            ptr: CUdeviceptr,
+        enum CapturedOp {
+            Copy {
+                src: CUdeviceptr,
+                dst: CUdeviceptr,
+                bytes: usize,
+            },
+            Fill {
+                module: CUmodule,
+                func: CUfunction,
+                count: u32,
+                ptr: CUdeviceptr,
+            },
+            MatMul {
+                module: CUmodule,
+                func: CUfunction,
+                a: CUdeviceptr,
+                b: CUdeviceptr,
+                out: CUdeviceptr,
+                m: u32,
+                n: u32,
+                k: u32,
+            },
         }
 
-        let mut loaded: Vec<LoadedFill> = Vec::new();
+        fn unload_ops(driver: &CudaDriver, ops: &[CapturedOp]) {
+            for op in ops {
+                match op {
+                    CapturedOp::Fill { module, .. } | CapturedOp::MatMul { module, .. } => {
+                        let _ = driver.unload_module(*module);
+                    }
+                    CapturedOp::Copy { .. } => {}
+                }
+            }
+        }
+
+        let mut ops: Vec<CapturedOp> = Vec::new();
         for task_id in &order {
             let task = graph
                 .tasks
@@ -197,97 +225,263 @@ impl CudaBackend {
                 .iter()
                 .find(|t| t.id == *task_id)
                 .expect("task in order must exist");
-            if !matches!(task.kind, TaskKind::Fill) {
-                for item in &loaded {
-                    let _ = self.driver.unload_module(item.module);
+            match &task.kind {
+                TaskKind::Copy => {
+                    let src = match resource_param(task, "src") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let dst = match resource_param(task, "dst") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let (src_ptr, src_bytes) = match self.ptr(src) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    let (dst_ptr, dst_bytes) = match self.ptr(dst) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    if src_bytes != dst_bytes {
+                        unload_ops(&self.driver, &ops);
+                        return Err(map_backend_err(BackendError(format!(
+                            "copy size mismatch: src {src_bytes} dst {dst_bytes}"
+                        ))));
+                    }
+                    ops.push(CapturedOp::Copy {
+                        src: src_ptr,
+                        dst: dst_ptr,
+                        bytes: src_bytes,
+                    });
                 }
-                return Err(map_backend_err(BackendError(format!(
-                    "cuda graph thin gate only supports Fill, got {:?}",
-                    task.kind
-                ))));
+                TaskKind::Fill => {
+                    let dst = match resource_param(task, "dst") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    if let Err(err) = f32_param(task, "value") {
+                        unload_ops(&self.driver, &ops);
+                        return Err(map_backend_err(err));
+                    }
+                    let (ptr, bytes) = match self.ptr(dst) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    if bytes % 4 != 0 {
+                        unload_ops(&self.driver, &ops);
+                        return Err(map_backend_err(BackendError(format!(
+                            "fill destination {} length {bytes} is not a multiple of 4",
+                            dst.0
+                        ))));
+                    }
+                    let count = (bytes / 4) as u32;
+                    let program = program_from_task(task);
+                    let ptx = match emit_ptx(&program) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_emit_err(err));
+                        }
+                    };
+                    let module = match self.driver.load_module(&ptx) {
+                        Ok(m) => m,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_driver_err(err));
+                        }
+                    };
+                    let func = match self.driver.get_function(module, &program.entry) {
+                        Ok(f) => f,
+                        Err(err) => {
+                            let _ = self.driver.unload_module(module);
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_driver_err(err));
+                        }
+                    };
+                    ops.push(CapturedOp::Fill {
+                        module,
+                        func,
+                        count,
+                        ptr,
+                    });
+                }
+                TaskKind::MatMul => {
+                    let a = match resource_param(task, "a") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let b = match resource_param(task, "b") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let out = match resource_param(task, "out") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let m = match u32_param(task, "m") {
+                        Ok(v) => v,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let n = match u32_param(task, "n") {
+                        Ok(v) => v,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let k = match u32_param(task, "k") {
+                        Ok(v) => v,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let (a_ptr, a_bytes) = match self.ptr(a) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    let (b_ptr, b_bytes) = match self.ptr(b) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    let (out_ptr, out_bytes) = match self.ptr(out) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    if let Err(err) =
+                        expect_bytes(a, a_bytes, (m as usize) * (k as usize) * 4)
+                    {
+                        unload_ops(&self.driver, &ops);
+                        return Err(err);
+                    }
+                    if let Err(err) =
+                        expect_bytes(b, b_bytes, (k as usize) * (n as usize) * 4)
+                    {
+                        unload_ops(&self.driver, &ops);
+                        return Err(err);
+                    }
+                    if let Err(err) =
+                        expect_bytes(out, out_bytes, (m as usize) * (n as usize) * 4)
+                    {
+                        unload_ops(&self.driver, &ops);
+                        return Err(err);
+                    }
+                    let program = program_from_task(task);
+                    let ptx = match emit_ptx(&program) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_emit_err(err));
+                        }
+                    };
+                    let module = match self.driver.load_module(&ptx) {
+                        Ok(m) => m,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_driver_err(err));
+                        }
+                    };
+                    let func = match self.driver.get_function(module, &program.entry) {
+                        Ok(f) => f,
+                        Err(err) => {
+                            let _ = self.driver.unload_module(module);
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_driver_err(err));
+                        }
+                    };
+                    ops.push(CapturedOp::MatMul {
+                        module,
+                        func,
+                        a: a_ptr,
+                        b: b_ptr,
+                        out: out_ptr,
+                        m,
+                        n,
+                        k,
+                    });
+                }
+                other => {
+                    unload_ops(&self.driver, &ops);
+                    return Err(map_backend_err(BackendError(format!(
+                        "cuda graph thin gate only supports Copy/Fill/MatMul, got {other:?}"
+                    ))));
+                }
             }
-            let dst = match resource_param(task, "dst") {
-                Ok(id) => id,
-                Err(err) => {
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(map_backend_err(err));
-                }
-            };
-            let _value = match f32_param(task, "value") {
-                Ok(v) => v,
-                Err(err) => {
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(map_backend_err(err));
-                }
-            };
-            let (ptr, bytes) = match self.ptr(dst) {
-                Ok(p) => p,
-                Err(err) => {
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(err);
-                }
-            };
-            if bytes % 4 != 0 {
-                for item in &loaded {
-                    let _ = self.driver.unload_module(item.module);
-                }
-                return Err(map_backend_err(BackendError(format!(
-                    "fill destination {} length {bytes} is not a multiple of 4",
-                    dst.0
-                ))));
-            }
-            let count = (bytes / 4) as u32;
-            let program = program_from_task(task);
-            let ptx = match emit_ptx(&program) {
-                Ok(p) => p,
-                Err(err) => {
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(map_emit_err(err));
-                }
-            };
-            let module = match self.driver.load_module(&ptx) {
-                Ok(m) => m,
-                Err(err) => {
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(map_driver_err(err));
-                }
-            };
-            let func = match self.driver.get_function(module, &program.entry) {
-                Ok(f) => f,
-                Err(err) => {
-                    let _ = self.driver.unload_module(module);
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(map_driver_err(err));
-                }
-            };
-            loaded.push(LoadedFill {
-                module,
-                func,
-                count,
-                ptr,
-            });
         }
 
         let result = (|| {
             self.driver
                 .stream_begin_capture()
                 .map_err(map_driver_err)?;
-            for item in &loaded {
-                self.driver
-                    .launch_fill_async(item.func, item.count, item.ptr)
-                    .map_err(map_driver_err)?;
+            for op in &ops {
+                match op {
+                    CapturedOp::Copy { src, dst, bytes } => {
+                        self.driver
+                            .memcpy_dtod_async(*dst, *src, *bytes)
+                            .map_err(map_driver_err)?;
+                    }
+                    CapturedOp::Fill {
+                        func, count, ptr, ..
+                    } => {
+                        self.driver
+                            .launch_fill_async(*func, *count, *ptr)
+                            .map_err(map_driver_err)?;
+                    }
+                    CapturedOp::MatMul {
+                        func,
+                        a,
+                        b,
+                        out,
+                        m,
+                        n,
+                        k,
+                        ..
+                    } => {
+                        self.driver
+                            .launch_matmul_async(*func, *a, *b, *out, *m, *n, *k)
+                            .map_err(map_driver_err)?;
+                    }
+                }
             }
             let graph = self.driver.stream_end_capture().map_err(map_driver_err)?;
             let exec = match self.driver.graph_instantiate(graph) {
@@ -303,9 +497,7 @@ impl CudaBackend {
             launch.map_err(map_driver_err)
         })();
 
-        for item in loaded {
-            let _ = self.driver.unload_module(item.module);
-        }
+        unload_ops(&self.driver, &ops);
         result
     }
 
