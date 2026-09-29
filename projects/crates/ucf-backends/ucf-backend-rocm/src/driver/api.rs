@@ -21,14 +21,22 @@ macro_rules! load_fn {
 /// HIP runtime handles owned by the ROCm backend (no `hiprtc`).
 pub struct HipDriver {
     _runtime: Library,
+    stream: HipStream,
     hipMalloc: HipMalloc,
     hipFree: HipFree,
     hipMemcpy: HipMemcpy,
-    hipDeviceSynchronize: HipDeviceSynchronize,
     hipModuleLoadData: HipModuleLoadData,
     hipModuleUnload: HipModuleUnload,
     hipModuleGetFunction: HipModuleGetFunction,
     hipModuleLaunchKernel: HipModuleLaunchKernel,
+    hipStreamSynchronize: HipStreamSynchronize,
+    hipStreamDestroy: HipStreamDestroy,
+    hipStreamBeginCapture: HipStreamBeginCapture,
+    hipStreamEndCapture: HipStreamEndCapture,
+    hipGraphInstantiateWithFlags: HipGraphInstantiateWithFlags,
+    hipGraphLaunch: HipGraphLaunch,
+    hipGraphDestroy: HipGraphDestroy,
+    hipGraphExecDestroy: HipGraphExecDestroy,
 }
 
 impl HipDriver {
@@ -42,14 +50,27 @@ impl HipDriver {
             let hipMalloc = load_fn!(runtime, hipMalloc, HipMalloc);
             let hipFree = load_fn!(runtime, hipFree, HipFree);
             let hipMemcpy = load_fn!(runtime, hipMemcpy, HipMemcpy);
-            let hipDeviceSynchronize =
-                load_fn!(runtime, hipDeviceSynchronize, HipDeviceSynchronize);
             let hipModuleLoadData = load_fn!(runtime, hipModuleLoadData, HipModuleLoadData);
             let hipModuleUnload = load_fn!(runtime, hipModuleUnload, HipModuleUnload);
             let hipModuleGetFunction =
                 load_fn!(runtime, hipModuleGetFunction, HipModuleGetFunction);
             let hipModuleLaunchKernel =
                 load_fn!(runtime, hipModuleLaunchKernel, HipModuleLaunchKernel);
+            let hipStreamCreate = load_fn!(runtime, hipStreamCreate, HipStreamCreate);
+            let hipStreamSynchronize =
+                load_fn!(runtime, hipStreamSynchronize, HipStreamSynchronize);
+            let hipStreamDestroy = load_fn!(runtime, hipStreamDestroy, HipStreamDestroy);
+            let hipStreamBeginCapture =
+                load_fn!(runtime, hipStreamBeginCapture, HipStreamBeginCapture);
+            let hipStreamEndCapture = load_fn!(runtime, hipStreamEndCapture, HipStreamEndCapture);
+            let hipGraphInstantiateWithFlags = load_fn!(
+                runtime,
+                hipGraphInstantiateWithFlags,
+                HipGraphInstantiateWithFlags
+            );
+            let hipGraphLaunch = load_fn!(runtime, hipGraphLaunch, HipGraphLaunch);
+            let hipGraphDestroy = load_fn!(runtime, hipGraphDestroy, HipGraphDestroy);
+            let hipGraphExecDestroy = load_fn!(runtime, hipGraphExecDestroy, HipGraphExecDestroy);
 
             let mut count = 0i32;
             check_hip((hipGetDeviceCount)(&mut count), "hipGetDeviceCount")?;
@@ -64,16 +85,27 @@ impl HipDriver {
             }
             check_hip((hipSetDevice)(device_index as i32), "hipSetDevice")?;
 
+            let mut stream: HipStream = std::ptr::null_mut();
+            check_hip((hipStreamCreate)(&mut stream), "hipStreamCreate")?;
+
             Ok(Self {
                 _runtime: runtime,
+                stream,
                 hipMalloc,
                 hipFree,
                 hipMemcpy,
-                hipDeviceSynchronize,
                 hipModuleLoadData,
                 hipModuleUnload,
                 hipModuleGetFunction,
                 hipModuleLaunchKernel,
+                hipStreamSynchronize,
+                hipStreamDestroy,
+                hipStreamBeginCapture,
+                hipStreamEndCapture,
+                hipGraphInstantiateWithFlags,
+                hipGraphLaunch,
+                hipGraphDestroy,
+                hipGraphExecDestroy,
             })
         }
     }
@@ -175,6 +207,26 @@ impl HipDriver {
         out: HipDeviceptr,
         count: u32,
     ) -> Result<(), DriverError> {
+        self.launch_fill_on_stream(func, out, count, true)
+    }
+
+    /// Launch fill without synchronizing (for stream capture into a HIP Graph).
+    pub fn launch_fill_async(
+        &self,
+        func: HipFunction,
+        out: HipDeviceptr,
+        count: u32,
+    ) -> Result<(), DriverError> {
+        self.launch_fill_on_stream(func, out, count, false)
+    }
+
+    fn launch_fill_on_stream(
+        &self,
+        func: HipFunction,
+        out: HipDeviceptr,
+        count: u32,
+        sync: bool,
+    ) -> Result<(), DriverError> {
         let block = 256u32;
         let grid = count.div_ceil(block).max(1);
         let mut out_arg = out;
@@ -183,7 +235,7 @@ impl HipDriver {
             (&mut out_arg as *mut HipDeviceptr).cast(),
             (&mut count_arg as *mut u32).cast(),
         ];
-        self.launch(func, grid, block, &mut params)
+        self.launch(func, grid, block, &mut params, sync)
     }
 
     pub fn launch_matmul(
@@ -213,7 +265,7 @@ impl HipDriver {
             (&mut n_arg as *mut u32).cast(),
             (&mut k_arg as *mut u32).cast(),
         ];
-        self.launch(func, grid, block, &mut params)
+        self.launch(func, grid, block, &mut params, true)
     }
 
     /// Launch attention: `(q, k, v, out, batch, heads, seq, dim)`.
@@ -254,7 +306,7 @@ impl HipDriver {
             (&mut seq_arg as *mut u32).cast(),
             (&mut dim_arg as *mut u32).cast(),
         ];
-        self.launch(func, grid, block, &mut params)
+        self.launch(func, grid, block, &mut params, true)
     }
 
     fn launch(
@@ -263,6 +315,7 @@ impl HipDriver {
         grid: u32,
         block: u32,
         params: &mut [*mut c_void],
+        sync: bool,
     ) -> Result<(), DriverError> {
         unsafe {
             check_hip(
@@ -275,15 +328,85 @@ impl HipDriver {
                     1,
                     1,
                     0,
-                    std::ptr::null_mut(),
+                    self.stream,
                     params.as_mut_ptr(),
                     std::ptr::null_mut(),
                 ),
                 "hipModuleLaunchKernel",
             )?;
-            check_hip((self.hipDeviceSynchronize)(), "hipDeviceSynchronize")?;
+            if sync {
+                check_hip(
+                    (self.hipStreamSynchronize)(self.stream),
+                    "hipStreamSynchronize",
+                )?;
+            }
         }
         Ok(())
+    }
+
+    /// Begin recording work on the owned stream into a HIP Graph.
+    pub fn stream_begin_capture(&self) -> Result<(), DriverError> {
+        unsafe {
+            check_hip(
+                (self.hipStreamBeginCapture)(self.stream, HIP_STREAM_CAPTURE_MODE_GLOBAL),
+                "hipStreamBeginCapture",
+            )
+        }
+    }
+
+    /// End stream capture and return the recorded graph.
+    pub fn stream_end_capture(&self) -> Result<HipGraph, DriverError> {
+        let mut graph: HipGraph = std::ptr::null_mut();
+        unsafe {
+            check_hip(
+                (self.hipStreamEndCapture)(self.stream, &mut graph),
+                "hipStreamEndCapture",
+            )?;
+        }
+        Ok(graph)
+    }
+
+    /// Instantiate a captured graph for launch.
+    pub fn graph_instantiate(&self, graph: HipGraph) -> Result<HipGraphExec, DriverError> {
+        let mut exec: HipGraphExec = std::ptr::null_mut();
+        unsafe {
+            check_hip(
+                (self.hipGraphInstantiateWithFlags)(&mut exec, graph, 0),
+                "hipGraphInstantiateWithFlags",
+            )?;
+        }
+        Ok(exec)
+    }
+
+    /// Launch an instantiated graph on the owned stream and synchronize.
+    pub fn graph_launch(&self, exec: HipGraphExec) -> Result<(), DriverError> {
+        unsafe {
+            check_hip(
+                (self.hipGraphLaunch)(exec, self.stream),
+                "hipGraphLaunch",
+            )?;
+            check_hip(
+                (self.hipStreamSynchronize)(self.stream),
+                "hipStreamSynchronize",
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn graph_destroy(&self, graph: HipGraph) -> Result<(), DriverError> {
+        unsafe { check_hip((self.hipGraphDestroy)(graph), "hipGraphDestroy") }
+    }
+
+    pub fn graph_exec_destroy(&self, exec: HipGraphExec) -> Result<(), DriverError> {
+        unsafe { check_hip((self.hipGraphExecDestroy)(exec), "hipGraphExecDestroy") }
+    }
+}
+
+impl Drop for HipDriver {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = (self.hipStreamDestroy)(self.stream);
+        }
     }
 }
 
