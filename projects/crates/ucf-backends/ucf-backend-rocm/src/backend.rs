@@ -188,7 +188,8 @@ impl Backend for RocmBackend {
     fn features(&self) -> FeatureSet {
         FeatureSet::new()
             .with(Feature::UnifiedMemory)
-            .with(Feature::TensorCore)
+            .with(Feature::MatrixCore)
+            .with(Feature::HipGraph)
     }
 
     fn prepare(&mut self, graph: &Graph) -> Result<()> {
