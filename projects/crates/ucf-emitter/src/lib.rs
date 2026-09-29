@@ -1,4 +1,4 @@
-//! Built-in shader emitter: UCF `ShaderProgram` → PTX / DXBC / SPIR-V / HIP bytes.
+//! Built-in shader emitter: UCF `ShaderProgram` → PTX / DXBC / SPIR-V / HSACO bytes.
 #![warn(missing_docs)]
 
 mod dxil;
@@ -8,7 +8,7 @@ mod spirv;
 mod task;
 
 pub use dxil::{emit_dxil, emit_raster_tri_dxbc, RasterTriDxbc};
-pub use hip::emit_hip;
+pub use hip::{emit_hip, emit_hsaco};
 pub use ptx::emit_ptx;
 pub use spirv::{emit_raster_tri_spirv, emit_spirv, RasterTriSpirv};
 pub use task::{needs_kernel, program_from_task};
@@ -22,7 +22,7 @@ pub enum ShaderIsa {
     Dxil,
     /// Vulkan SPIR-V module bytes.
     Spirv,
-    /// HIP C++ source for `hiprtc` (NUL-terminated UTF-8).
+    /// AMD HSACO ELF code object for `hipModuleLoadData`.
     Hip,
 }
 
@@ -42,7 +42,7 @@ impl EmittedShader {
             ShaderIsa::Ptx => emit_ptx(program)?,
             ShaderIsa::Dxil => emit_dxil(program)?,
             ShaderIsa::Spirv => emit_spirv(program)?,
-            ShaderIsa::Hip => emit_hip(program)?,
+            ShaderIsa::Hip => emit_hsaco(program)?,
         };
         Ok(Self { isa, bytes })
     }
