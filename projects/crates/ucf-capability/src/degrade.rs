@@ -39,6 +39,56 @@ pub enum SyncStrategy {
     LegacyBarriers,
 }
 
+/// Resolved degrade-chain strategies for a backend instance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WiredStrategies {
+    /// Descriptor binding path.
+    pub descriptor: DescriptorStrategy,
+    /// Pipeline object path.
+    pub pipeline: PipelineStrategy,
+    /// Sync path.
+    pub sync: SyncStrategy,
+}
+
+impl WiredStrategies {
+    /// Pick all three strategies from an advertised feature set.
+    pub fn from_features(features: &FeatureSet) -> Self {
+        Self {
+            descriptor: pick_descriptor_strategy(features),
+            pipeline: pick_pipeline_strategy(features),
+            sync: pick_sync_strategy(features),
+        }
+    }
+
+    /// Stable label for the descriptor path (thin-gate assertions).
+    pub fn descriptor_label(self) -> &'static str {
+        match self.descriptor {
+            DescriptorStrategy::ResourceDescriptorHeap => "resource_descriptor_heap",
+            DescriptorStrategy::DescriptorBuffer => "descriptor_buffer",
+            DescriptorStrategy::BindlessIndexing => "bindless_indexing",
+            DescriptorStrategy::TraditionalSets => "traditional_sets",
+        }
+    }
+
+    /// Stable label for the pipeline path.
+    pub fn pipeline_label(self) -> &'static str {
+        match self.pipeline {
+            PipelineStrategy::ShaderObject => "shader_object",
+            PipelineStrategy::PipelineLibrary => "pipeline_library",
+            PipelineStrategy::PsoPrecache => "pso_precache",
+        }
+    }
+
+    /// Stable label for the sync path.
+    pub fn sync_label(self) -> &'static str {
+        match self.sync {
+            SyncStrategy::EnhancedBarriers => "enhanced_barriers",
+            SyncStrategy::Synchronization2 => "synchronization2",
+            SyncStrategy::LegacyBarriers => "legacy_barriers",
+        }
+    }
+}
+
 /// Choose the best descriptor strategy supported by `features`.
 pub fn pick_descriptor_strategy(features: &FeatureSet) -> DescriptorStrategy {
     if features.has(Feature::Bindless) && features.has(Feature::DescriptorHeap) {

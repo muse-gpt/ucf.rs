@@ -2,10 +2,7 @@ use std::collections::BTreeMap;
 
 use ash::vk;
 use ash::{Device, Entry, Instance};
-use ucf_capability::{
-    pick_descriptor_strategy, pick_pipeline_strategy, pick_sync_strategy, DescriptorStrategy,
-    Feature, FeatureSet, PipelineStrategy, SyncStrategy,
-};
+use ucf_capability::{Feature, FeatureSet, WiredStrategies};
 use ucf_emitter::{emit_raster_tri_spirv, emit_spirv, program_from_task};
 use ucf_ir::{Graph, TaskKind, TaskNode};
 use ucf_scheduler::{Backend, Error as SchedulerError, Result};
@@ -17,17 +14,6 @@ struct DeviceBuffer {
     buffer: vk::Buffer,
     memory: vk::DeviceMemory,
     bytes: usize,
-}
-
-/// Resolved degrade-chain strategies wired into this backend instance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WiredStrategies {
-    /// Descriptor binding path chosen from [`FeatureSet`].
-    pub descriptor: DescriptorStrategy,
-    /// Pipeline object path chosen from [`FeatureSet`].
-    pub pipeline: PipelineStrategy,
-    /// Sync path chosen from [`FeatureSet`].
-    pub sync: SyncStrategy,
 }
 
 /// Vulkan compute / graphics backend with device-resident buffers.
@@ -118,11 +104,7 @@ impl VulkanBackend {
                 .with(Feature::DescriptorBuffer)
                 .with(Feature::DynamicRendering)
                 .with(Feature::Synchronization2);
-            let strategies = WiredStrategies {
-                descriptor: pick_descriptor_strategy(&features),
-                pipeline: pick_pipeline_strategy(&features),
-                sync: pick_sync_strategy(&features),
-            };
+            let strategies = WiredStrategies::from_features(&features);
 
             Ok(Self {
                 _entry: entry,
@@ -162,28 +144,15 @@ impl VulkanBackend {
     }
 
     fn mark_sync_path(&mut self) {
-        self.last_sync_path = match self.strategies.sync {
-            SyncStrategy::EnhancedBarriers => "enhanced_barriers",
-            SyncStrategy::Synchronization2 => "synchronization2",
-            SyncStrategy::LegacyBarriers => "legacy_barriers",
-        };
+        self.last_sync_path = self.strategies.sync_label();
     }
 
     fn mark_descriptor_path(&mut self) {
-        self.last_descriptor_path = match self.strategies.descriptor {
-            DescriptorStrategy::ResourceDescriptorHeap => "resource_descriptor_heap",
-            DescriptorStrategy::DescriptorBuffer => "descriptor_buffer",
-            DescriptorStrategy::BindlessIndexing => "bindless_indexing",
-            DescriptorStrategy::TraditionalSets => "traditional_sets",
-        };
+        self.last_descriptor_path = self.strategies.descriptor_label();
     }
 
     fn mark_pipeline_path(&mut self) {
-        self.last_pipeline_path = match self.strategies.pipeline {
-            PipelineStrategy::ShaderObject => "shader_object",
-            PipelineStrategy::PipelineLibrary => "pipeline_library",
-            PipelineStrategy::PsoPrecache => "pso_precache",
-        };
+        self.last_pipeline_path = self.strategies.pipeline_label();
     }
 
     /// Upload host `f32` values into an allocated device buffer.

@@ -7,3 +7,4 @@ Vulkan compute backend via **ash** (`vulkan-1`).
 - `Fill` / `MatMul` compute from [`ucf-emitter`](../../ucf-emitter/) SPIR-V (WGSL → `naga`)
 - `Raster` thin gate: `vkCmdClearColorImage` / optional `draw=tri` → packed `RGBA8` (`read_u8`)
 - Soft-skips when no Vulkan device is available (`tests/parity_cpu.rs`, `tests/raster_clear.rs`, `tests/raster_tri.rs`)
+- Degrade wiring: `strategies()` / `last_*_path` from `FeatureSet` picks (`ucf` `tests/vulkan_degrade_wire.rs`)
