@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use ucf_capability::{Feature, FeatureSet};
-use ucf_emitter::{emit_hip, program_from_task};
+use ucf_emitter::{emit_hsaco, program_from_task};
 use ucf_ir::{Graph, TaskKind, TaskNode};
 use ucf_scheduler::{Backend, Error as SchedulerError, Result};
 use ucf_types::ResourceId;
@@ -121,8 +121,8 @@ impl RocmBackend {
         }
         let count = (bytes / 4) as u32;
         let program = program_from_task(task);
-        let hip = emit_hip(&program).map_err(map_emit_err)?;
-        let module = self.driver.compile_module(&hip).map_err(map_driver_err)?;
+        let hsaco = emit_hsaco(&program).map_err(map_emit_err)?;
+        let module = self.driver.load_module(&hsaco).map_err(map_driver_err)?;
         let result = (|| {
             let func = self
                 .driver
@@ -151,8 +151,8 @@ impl RocmBackend {
         expect_bytes(out, out_bytes, (m as usize) * (n as usize) * 4)?;
 
         let program = program_from_task(task);
-        let hip = emit_hip(&program).map_err(map_emit_err)?;
-        let module = self.driver.compile_module(&hip).map_err(map_driver_err)?;
+        let hsaco = emit_hsaco(&program).map_err(map_emit_err)?;
+        let module = self.driver.load_module(&hsaco).map_err(map_driver_err)?;
         let result = (|| {
             let func = self
                 .driver

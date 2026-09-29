@@ -1,15 +1,12 @@
 use std::ffi::c_void;
 
 pub type HipError = i32;
-pub type HiprtcResult = i32;
 pub type HipDeviceptr = *mut c_void;
 pub type HipModule = *mut c_void;
 pub type HipFunction = *mut c_void;
 pub type HipStream = *mut c_void;
-pub type HiprtcProgram = *mut c_void;
 
 pub const HIP_SUCCESS: HipError = 0;
-pub const HIPRTC_SUCCESS: HiprtcResult = 0;
 
 pub const HIP_MEMCPY_HOST_TO_DEVICE: i32 = 1;
 pub const HIP_MEMCPY_DEVICE_TO_HOST: i32 = 2;
@@ -61,19 +58,3 @@ pub type HipModuleLaunchKernel = unsafe extern "C" fn(
     *mut *mut c_void,
     *mut c_void,
 ) -> HipError;
-
-pub type HiprtcCreateProgram = unsafe extern "C" fn(
-    *mut HiprtcProgram,
-    *const i8,
-    *const i8,
-    i32,
-    *const *const i8,
-    *const *const i8,
-) -> HiprtcResult;
-pub type HiprtcCompileProgram =
-    unsafe extern "C" fn(HiprtcProgram, i32, *const *const i8) -> HiprtcResult;
-pub type HiprtcGetCodeSize = unsafe extern "C" fn(HiprtcProgram, *mut usize) -> HiprtcResult;
-pub type HiprtcGetCode = unsafe extern "C" fn(HiprtcProgram, *mut i8) -> HiprtcResult;
-pub type HiprtcDestroyProgram = unsafe extern "C" fn(*mut HiprtcProgram) -> HiprtcResult;
-pub type HiprtcGetProgramLogSize = unsafe extern "C" fn(HiprtcProgram, *mut usize) -> HiprtcResult;
-pub type HiprtcGetProgramLog = unsafe extern "C" fn(HiprtcProgram, *mut i8) -> HiprtcResult;
