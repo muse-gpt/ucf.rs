@@ -143,6 +143,16 @@ impl CudaBackend {
             .collect())
     }
 
+    /// Download a device buffer as raw bytes.
+    pub fn read_u8(&self, id: ResourceId) -> Result<Vec<u8>> {
+        let (ptr, bytes) = self.ptr(id)?;
+        let mut host = vec![0u8; bytes];
+        self.driver
+            .memcpy_dtoh(&mut host, ptr)
+            .map_err(map_driver_err)?;
+        Ok(host)
+    }
+
     /// Run every task on this backend. Caller must [`prepare`] and seed inputs first.
     pub fn run_prepared(&mut self, graph: &Graph) -> Result<()> {
         graph.validate().map_err(SchedulerError::from)?;
@@ -245,6 +255,7 @@ impl Backend for CudaBackend {
             TaskKind::Copy => self.run_copy(task),
             TaskKind::Fill => self.run_fill(task),
             TaskKind::MatMul => self.run_matmul(task),
+            TaskKind::Custom(name) if name == "denoise" => self.run_denoise(task),
             TaskKind::Raster | TaskKind::RtTrace => Err(map_backend_err(BackendError(
                 "raster and ray tracing are not supported on CUDA Driver API".into(),
             ))),
@@ -326,6 +337,41 @@ impl CudaBackend {
                 .map_err(map_driver_err)?;
             self.driver
                 .launch_matmul(func, a_ptr, b_ptr, out_ptr, m, n, k)
+                .map_err(map_driver_err)
+        })();
+        let _ = self.driver.unload_module(module);
+        result
+    }
+
+    fn run_denoise(&mut self, task: &TaskNode) -> Result<()> {
+        let src = resource_param(task, "src").map_err(map_backend_err)?;
+        let out = resource_param(task, "out").map_err(map_backend_err)?;
+        let width = u32_param(task, "width").map_err(map_backend_err)?;
+        let height = u32_param(task, "height").map_err(map_backend_err)?;
+        if width == 0 || height == 0 {
+            return Err(map_backend_err(BackendError(
+                "denoise width/height must be > 0".into(),
+            )));
+        }
+        let need = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|n| n.checked_mul(4))
+            .ok_or_else(|| map_backend_err(BackendError("denoise size overflow".into())))?;
+        let (src_ptr, src_bytes) = self.ptr(src)?;
+        let (out_ptr, out_bytes) = self.ptr(out)?;
+        expect_bytes(src, src_bytes, need)?;
+        expect_bytes(out, out_bytes, need)?;
+
+        let program = program_from_task(task);
+        let ptx = emit_ptx(&program).map_err(map_emit_err)?;
+        let module = self.driver.load_module(&ptx).map_err(map_driver_err)?;
+        let result = (|| {
+            let func = self
+                .driver
+                .get_function(module, &program.entry)
+                .map_err(map_driver_err)?;
+            self.driver
+                .launch_rgba8_denoise(func, src_ptr, out_ptr, width, height)
                 .map_err(map_driver_err)
         })();
         let _ = self.driver.unload_module(module);
