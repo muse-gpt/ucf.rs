@@ -10,3 +10,4 @@ ROCm / HIP backend via dynamic `amdhip64` (or `amdhip64_6`).
 - HipGraph wiring: `Copy` / `Fill` / `MatMul` stream capture → instantiate → launch (`ucf` `tests/hip_graph_fill.rs`, `tests/hip_graph_reference.rs`)
 - HipGraph replay vs stream wall-clock report (`ucf` `tests/hip_graph_perf.rs`)
 - Mixed-vendor same graph via host bounce (`ucf` `tests/cuda_rocm_host_bridge.rs`)
+- Stream-path HSACO module cache (`ucf` `tests/module_cache.rs`)
