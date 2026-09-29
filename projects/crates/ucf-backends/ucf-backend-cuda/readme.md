@@ -6,5 +6,6 @@ Executes the stage-0 reference path (`Copy` / `Fill` / `MatMul`) plus `Custom("d
 
 - CUDA Graph thin gate: `Copy` / `Fill` / `MatMul` stream capture → instantiate → launch (`ucf` `tests/cuda_graph_fill.rs`, `tests/cuda_graph_reference.rs`)
 - CUDA Graph replay vs stream wall-clock report (`ucf` `tests/cuda_graph_perf.rs`)
+- Mixed-vendor same graph via host bounce (`ucf` `tests/cuda_rocm_host_bridge.rs`)
 
 Parity vs CPU: `tests/parity_cpu.rs` (soft-skips when no driver).
