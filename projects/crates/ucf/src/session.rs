@@ -1,20 +1,28 @@
 //! CPU application session: prepare → write → run → flush → readback.
 
-use ucf_backend_cpu::{shared_store, CpuBackend, SharedHostStore};
+use std::sync::Arc;
+
+use ucf_backend_cpu::{shared_store, CpuBackend, HostExternalBuffer, SharedHostStore};
 use ucf_capability::CapabilityReport;
 use ucf_ir::Graph;
 use ucf_runtime::{ExecutionDiagnostics, Runtime};
-use ucf_scheduler::{Error as SchedulerError, Result as SchedulerResult};
+use ucf_scheduler::{
+    Error as SchedulerError, ExecutionBindings, ImmediateBridge, ImmediateEvent, ImmediateStream,
+    Result as SchedulerResult, StreamEventBridge,
+};
 use ucf_types::ResourceId;
 
 /// Host-CPU session implementing the frozen application contract surface.
 ///
-/// Lifecycle: [`CpuSession::open`] → [`prepare`](Self::prepare) →
+/// Lifecycle: [`CpuSession::open`] → optional [`bind_host_buffer`](Self::bind_host_buffer) /
+/// [`set_stream`](Self::set_stream) → [`prepare`](Self::prepare) →
 /// [`write_f32`](Self::write_f32) → [`run_prepared`](Self::run_prepared) →
 /// [`flush`](Self::flush) → [`read_f32`](Self::read_f32).
 pub struct CpuSession {
     store: SharedHostStore,
     runtime: Runtime,
+    bindings: ExecutionBindings,
+    bridge: ImmediateBridge,
 }
 
 impl CpuSession {
@@ -23,11 +31,34 @@ impl CpuSession {
         let store = shared_store();
         let mut runtime = Runtime::new();
         runtime.register_backend(Box::new(CpuBackend::with_store(store.clone())));
-        Self { store, runtime }
+        Self {
+            store,
+            runtime,
+            bindings: ExecutionBindings::new(),
+            bridge: ImmediateBridge,
+        }
+    }
+
+    /// Allocate and bind a host external buffer for `id` (must match graph size).
+    pub fn bind_host_buffer(&mut self, id: ResourceId, byte_size: u64) -> SchedulerResult<()> {
+        let buf = HostExternalBuffer::allocate(self.store.clone(), id, byte_size)?;
+        self.bindings.bind_buffer(id, buf);
+        Ok(())
+    }
+
+    /// Prefer the CPU immediate stream for subsequent prepares.
+    pub fn set_stream(&mut self, stream: Arc<ImmediateStream>) {
+        self.bindings.set_stream(stream);
+    }
+
+    /// CPU stream/event bridge (upload→compute style waits are no-ops on host).
+    pub fn stream_bridge(&self) -> &dyn StreamEventBridge {
+        &self.bridge
     }
 
     /// Validate and allocate resources (idempotent when sizes match).
     pub fn prepare(&mut self, graph: &Graph) -> SchedulerResult<()> {
+        self.runtime.set_bindings(self.bindings.clone());
         self.runtime.prepare(graph)
     }
 
@@ -47,6 +78,7 @@ impl CpuSession {
 
     /// Prepare then submit (convenient one-shot).
     pub fn run(&mut self, graph: &Graph) -> SchedulerResult<()> {
+        self.runtime.set_bindings(self.bindings.clone());
         self.runtime.run(graph)
     }
 
@@ -83,4 +115,14 @@ impl CpuSession {
     pub fn store(&self) -> &SharedHostStore {
         &self.store
     }
+}
+
+/// Convenience constructors for CPU immediate sync tokens.
+pub fn immediate_stream() -> Arc<ImmediateStream> {
+    Arc::new(ImmediateStream)
+}
+
+/// Convenience constructor for a CPU immediate event.
+pub fn immediate_event() -> Arc<ImmediateEvent> {
+    Arc::new(ImmediateEvent)
 }

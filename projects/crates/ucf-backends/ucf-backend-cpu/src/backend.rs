@@ -1,14 +1,24 @@
+use std::collections::BTreeMap;
+use std::sync::Arc;
+
 use ucf_capability::FeatureSet;
 use ucf_ir::{Graph, TaskKind, TaskNode};
-use ucf_scheduler::{Backend, Error as SchedulerError, Result};
+use ucf_scheduler::{
+    Backend, Error as SchedulerError, ExecStream, ExecutionBindings, ExternalBuffer,
+    ImmediateBridge, Result, StreamEventBridge,
+};
 use ucf_types::ResourceId;
 
+use crate::external::HostExternalBuffer;
 use crate::params::{f32_param, resource_param, u32_param, BackendError};
 use crate::store::{shared_store, HostStore, SharedHostStore};
 
 /// Host CPU reference backend with readable buffer store.
 pub struct CpuBackend {
     store: SharedHostStore,
+    externals: BTreeMap<ResourceId, Arc<dyn ExternalBuffer>>,
+    stream: Option<Arc<dyn ExecStream>>,
+    bridge: ImmediateBridge,
 }
 
 impl CpuBackend {
@@ -16,12 +26,20 @@ impl CpuBackend {
     pub fn new() -> Self {
         Self {
             store: shared_store(),
+            externals: BTreeMap::new(),
+            stream: None,
+            bridge: ImmediateBridge,
         }
     }
 
     /// Backend that shares an existing store (for seed / readback beside `Runtime`).
     pub fn with_store(store: SharedHostStore) -> Self {
-        Self { store }
+        Self {
+            store,
+            externals: BTreeMap::new(),
+            stream: None,
+            bridge: ImmediateBridge,
+        }
     }
 
     /// Clone of the shared store handle.
@@ -40,8 +58,6 @@ impl CpuBackend {
     }
 }
 
-use std::sync::Arc;
-
 impl Default for CpuBackend {
     fn default() -> Self {
         Self::new()
@@ -57,6 +73,56 @@ impl Backend for CpuBackend {
         FeatureSet::new()
     }
 
+    fn bind_externals(&mut self, bindings: &ExecutionBindings) -> Result<()> {
+        for (id, buf) in &bindings.buffers {
+            if buf.backend_name() != "cpu" {
+                return Err(SchedulerError::Backend(
+                    "cpu".into(),
+                    format!(
+                        "external buffer for resource {} has backend `{}`, expected `cpu`",
+                        id.0,
+                        buf.backend_name()
+                    ),
+                ));
+            }
+            if let Some(host) = buf.as_any().downcast_ref::<HostExternalBuffer>() {
+                if !Arc::ptr_eq(host.store(), &self.store) {
+                    return Err(SchedulerError::Backend(
+                        "cpu".into(),
+                        format!(
+                            "external buffer for resource {} must share the backend host store",
+                            id.0
+                        ),
+                    ));
+                }
+                if host.resource_id() != *id {
+                    return Err(SchedulerError::Backend(
+                        "cpu".into(),
+                        format!(
+                            "external buffer resource id {} does not match bind key {}",
+                            host.resource_id().0,
+                            id.0
+                        ),
+                    ));
+                }
+            }
+            self.externals.insert(*id, Arc::clone(buf));
+        }
+        if let Some(stream) = &bindings.stream {
+            if stream.backend_name() != "cpu" {
+                return Err(SchedulerError::Backend(
+                    "cpu".into(),
+                    format!(
+                        "preferred stream backend `{}` is not `cpu`",
+                        stream.backend_name()
+                    ),
+                ));
+            }
+            self.stream = Some(Arc::clone(stream));
+        }
+        Ok(())
+    }
+
     fn prepare(&mut self, graph: &Graph) -> Result<()> {
         let mut store = self.lock()?;
         for node in &graph.resources.nodes {
@@ -66,6 +132,15 @@ impl Backend for CpuBackend {
                     node.id.0
                 )))
             })? as usize;
+            if let Some(ext) = self.externals.get(&node.id) {
+                if ext.byte_size() != bytes as u64 {
+                    return Err(Self::map_err(BackendError(format!(
+                        "resource {} external size {} does not match graph size {bytes}",
+                        node.id.0,
+                        ext.byte_size()
+                    ))));
+                }
+            }
             store.ensure(node.id, bytes).map_err(Self::map_err)?;
         }
         Ok(())
@@ -80,6 +155,14 @@ impl Backend for CpuBackend {
                 "cpu backend does not implement {other:?}"
             )))),
         }
+    }
+
+    fn stream_bridge(&self) -> Option<&dyn StreamEventBridge> {
+        Some(&self.bridge)
+    }
+
+    fn active_stream(&self) -> Option<&dyn ExecStream> {
+        self.stream.as_deref()
     }
 }
 
