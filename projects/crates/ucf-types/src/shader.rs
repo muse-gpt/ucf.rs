@@ -17,6 +17,8 @@ pub enum ShaderOp {
     MemCopy,
     /// RGBA8 spatial denoise: horizontal RGB mean with left neighbor, A passthrough
     Rgba8Denoise,
+    /// Naive attention matmuls: Out = (Q Kᵀ) V per head (no softmax)
+    Attention,
 }
 
 impl ShaderProgram {
@@ -45,6 +47,13 @@ impl ShaderProgram {
         Self {
             entry: entry.into(),
             ops: vec![ShaderOp::Rgba8Denoise],
+        }
+    }
+
+    pub fn attention(entry: impl Into<String>) -> Self {
+        Self {
+            entry: entry.into(),
+            ops: vec![ShaderOp::Attention],
         }
     }
 }

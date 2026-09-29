@@ -29,6 +29,9 @@ pub fn emit_hsaco(program: &ShaderProgram) -> Result<Vec<u8>, String> {
             ShaderOp::Rgba8Denoise => {
                 return compile_opencl(&ocl_rgba8_denoise(&program.entry));
             }
+            ShaderOp::Attention => {
+                return compile_opencl(&ocl_attention(&program.entry));
+            }
         }
     }
     Err("program has no emittable HSACO ops".into())
@@ -95,6 +98,45 @@ __kernel void {entry}(
     out[base + 1] = (unsigned char)(((unsigned int)src[base + 1] + (unsigned int)src[lbase + 1]) >> 1);
     out[base + 2] = (unsigned char)(((unsigned int)src[base + 2] + (unsigned int)src[lbase + 2]) >> 1);
     out[base + 3] = src[base + 3];
+}}
+"#
+    )
+}
+
+fn ocl_attention(entry: &str) -> String {
+    format!(
+        r#"
+__kernel void {entry}(
+    __global const float* q,
+    __global const float* k,
+    __global const float* v,
+    __global float* out,
+    unsigned int batch,
+    unsigned int heads,
+    unsigned int seq,
+    unsigned int dim
+) {{
+    unsigned int idx = get_global_id(0);
+    unsigned int total = batch * heads * seq * dim;
+    if (idx >= total) return;
+    unsigned int d = idx % dim;
+    unsigned int t = idx / dim;
+    unsigned int i = t % seq;
+    t = t / seq;
+    unsigned int h = t % heads;
+    unsigned int b = t / heads;
+    float acc = 0.0f;
+    for (unsigned int j = 0; j < seq; ++j) {{
+        float score = 0.0f;
+        for (unsigned int dd = 0; dd < dim; ++dd) {{
+            unsigned int qi = (((b * heads + h) * seq + i) * dim) + dd;
+            unsigned int ki = (((b * heads + h) * seq + j) * dim) + dd;
+            score += q[qi] * k[ki];
+        }}
+        unsigned int vi = (((b * heads + h) * seq + j) * dim) + d;
+        acc += score * v[vi];
+    }}
+    out[idx] = acc;
 }}
 "#
     )
