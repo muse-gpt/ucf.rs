@@ -6,7 +6,7 @@ use ucf_ir::{Graph, TaskKind, TaskNode};
 use ucf_scheduler::{Backend, Error as SchedulerError, Result};
 use ucf_types::ResourceId;
 
-use crate::driver::{CudaDriver, CUdeviceptr, CUexternalMemory, DriverError};
+use crate::driver::{CudaDriver, CUdeviceptr, CUexternalMemory, CUfunction, CUmodule, DriverError};
 use crate::params::{f32_param, resource_param, u32_param, BackendError};
 
 struct DeviceBuffer {
@@ -167,6 +167,146 @@ impl CudaBackend {
             self.submit_task(graph, task)?;
         }
         Ok(())
+    }
+
+    /// Capture a Fill-only TaskGraph into a CUDA Graph, instantiate, and launch once.
+    ///
+    /// Thin-gate subset: every task must be [`TaskKind::Fill`]. Modules stay loaded for
+    /// the lifetime of the capture (kernel nodes reference them).
+    pub fn run_prepared_cuda_graph(&mut self, graph: &Graph) -> Result<()> {
+        graph.validate().map_err(SchedulerError::from)?;
+        let order = graph.tasks.topological_order().map_err(SchedulerError::from)?;
+        if order.is_empty() {
+            return Err(map_backend_err(BackendError(
+                "cuda graph thin gate needs at least one Fill task".into(),
+            )));
+        }
+
+        struct LoadedFill {
+            module: CUmodule,
+            func: CUfunction,
+            count: u32,
+            ptr: CUdeviceptr,
+        }
+
+        let mut loaded: Vec<LoadedFill> = Vec::new();
+        for task_id in &order {
+            let task = graph
+                .tasks
+                .nodes
+                .iter()
+                .find(|t| t.id == *task_id)
+                .expect("task in order must exist");
+            if !matches!(task.kind, TaskKind::Fill) {
+                for item in &loaded {
+                    let _ = self.driver.unload_module(item.module);
+                }
+                return Err(map_backend_err(BackendError(format!(
+                    "cuda graph thin gate only supports Fill, got {:?}",
+                    task.kind
+                ))));
+            }
+            let dst = match resource_param(task, "dst") {
+                Ok(id) => id,
+                Err(err) => {
+                    for item in &loaded {
+                        let _ = self.driver.unload_module(item.module);
+                    }
+                    return Err(map_backend_err(err));
+                }
+            };
+            let _value = match f32_param(task, "value") {
+                Ok(v) => v,
+                Err(err) => {
+                    for item in &loaded {
+                        let _ = self.driver.unload_module(item.module);
+                    }
+                    return Err(map_backend_err(err));
+                }
+            };
+            let (ptr, bytes) = match self.ptr(dst) {
+                Ok(p) => p,
+                Err(err) => {
+                    for item in &loaded {
+                        let _ = self.driver.unload_module(item.module);
+                    }
+                    return Err(err);
+                }
+            };
+            if bytes % 4 != 0 {
+                for item in &loaded {
+                    let _ = self.driver.unload_module(item.module);
+                }
+                return Err(map_backend_err(BackendError(format!(
+                    "fill destination {} length {bytes} is not a multiple of 4",
+                    dst.0
+                ))));
+            }
+            let count = (bytes / 4) as u32;
+            let program = program_from_task(task);
+            let ptx = match emit_ptx(&program) {
+                Ok(p) => p,
+                Err(err) => {
+                    for item in &loaded {
+                        let _ = self.driver.unload_module(item.module);
+                    }
+                    return Err(map_emit_err(err));
+                }
+            };
+            let module = match self.driver.load_module(&ptx) {
+                Ok(m) => m,
+                Err(err) => {
+                    for item in &loaded {
+                        let _ = self.driver.unload_module(item.module);
+                    }
+                    return Err(map_driver_err(err));
+                }
+            };
+            let func = match self.driver.get_function(module, &program.entry) {
+                Ok(f) => f,
+                Err(err) => {
+                    let _ = self.driver.unload_module(module);
+                    for item in &loaded {
+                        let _ = self.driver.unload_module(item.module);
+                    }
+                    return Err(map_driver_err(err));
+                }
+            };
+            loaded.push(LoadedFill {
+                module,
+                func,
+                count,
+                ptr,
+            });
+        }
+
+        let result = (|| {
+            self.driver
+                .stream_begin_capture()
+                .map_err(map_driver_err)?;
+            for item in &loaded {
+                self.driver
+                    .launch_fill_async(item.func, item.count, item.ptr)
+                    .map_err(map_driver_err)?;
+            }
+            let graph = self.driver.stream_end_capture().map_err(map_driver_err)?;
+            let exec = match self.driver.graph_instantiate(graph) {
+                Ok(e) => e,
+                Err(err) => {
+                    let _ = self.driver.graph_destroy(graph);
+                    return Err(map_driver_err(err));
+                }
+            };
+            let launch = self.driver.graph_launch(exec);
+            let _ = self.driver.graph_exec_destroy(exec);
+            let _ = self.driver.graph_destroy(graph);
+            launch.map_err(map_driver_err)
+        })();
+
+        for item in loaded {
+            let _ = self.driver.unload_module(item.module);
+        }
+        result
     }
 
     fn ptr(&self, id: ResourceId) -> Result<(CUdeviceptr, usize)> {
