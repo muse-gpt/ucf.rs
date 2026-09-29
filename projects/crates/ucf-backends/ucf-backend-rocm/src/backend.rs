@@ -6,12 +6,21 @@ use ucf_ir::{Graph, TaskKind, TaskNode};
 use ucf_scheduler::{Backend, Error as SchedulerError, Result};
 use ucf_types::ResourceId;
 
-use crate::driver::{DriverError, HipDeviceptr, HipDriver, HipFunction, HipModule};
+use crate::driver::{
+    DriverError, HipDeviceptr, HipDriver, HipFunction, HipGraph, HipGraphExec, HipModule,
+};
 use crate::params::{f32_param, resource_param, u32_param, BackendError};
 
 struct DeviceBuffer {
     ptr: HipDeviceptr,
     bytes: usize,
+}
+
+/// Instantiated HIP Graph plus HSACO modules that must stay loaded until release.
+pub struct CapturedHipGraph {
+    graph: HipGraph,
+    exec: HipGraphExec,
+    modules: Vec<HipModule>,
 }
 
 /// AMD ROCm / HIP backend with device-resident resources.
@@ -85,27 +94,55 @@ impl RocmBackend {
         Ok(())
     }
 
-    /// Capture a Fill-only TaskGraph into a HIP Graph, instantiate, and launch once.
+    /// Capture a Copy/Fill/MatMul TaskGraph into a HIP Graph and instantiate it.
     ///
-    /// Thin-gate subset: every task must be [`TaskKind::Fill`]. Modules stay loaded for
-    /// the lifetime of the capture (kernel nodes reference them).
-    pub fn run_prepared_hip_graph(&mut self, graph: &Graph) -> Result<()> {
+    /// Caller must [`launch_hip_graph`] then [`release_hip_graph`]. Modules stay loaded
+    /// for the lifetime of the returned handle.
+    pub fn capture_hip_graph(&mut self, graph: &Graph) -> Result<CapturedHipGraph> {
         graph.validate().map_err(SchedulerError::from)?;
         let order = graph.tasks.topological_order().map_err(SchedulerError::from)?;
         if order.is_empty() {
             return Err(map_backend_err(BackendError(
-                "hip graph thin gate needs at least one Fill task".into(),
+                "hip graph thin gate needs at least one Copy/Fill/MatMul task".into(),
             )));
         }
 
-        struct LoadedFill {
-            module: HipModule,
-            func: HipFunction,
-            count: u32,
-            ptr: HipDeviceptr,
+        enum CapturedOp {
+            Copy {
+                src: HipDeviceptr,
+                dst: HipDeviceptr,
+                bytes: usize,
+            },
+            Fill {
+                module: HipModule,
+                func: HipFunction,
+                count: u32,
+                ptr: HipDeviceptr,
+            },
+            MatMul {
+                module: HipModule,
+                func: HipFunction,
+                a: HipDeviceptr,
+                b: HipDeviceptr,
+                out: HipDeviceptr,
+                m: u32,
+                n: u32,
+                k: u32,
+            },
         }
 
-        let mut loaded: Vec<LoadedFill> = Vec::new();
+        fn unload_ops(driver: &HipDriver, ops: &[CapturedOp]) {
+            for op in ops {
+                match op {
+                    CapturedOp::Fill { module, .. } | CapturedOp::MatMul { module, .. } => {
+                        let _ = driver.unload_module(*module);
+                    }
+                    CapturedOp::Copy { .. } => {}
+                }
+            }
+        }
+
+        let mut ops: Vec<CapturedOp> = Vec::new();
         for task_id in &order {
             let task = graph
                 .tasks
@@ -113,97 +150,263 @@ impl RocmBackend {
                 .iter()
                 .find(|t| t.id == *task_id)
                 .expect("task in order must exist");
-            if !matches!(task.kind, TaskKind::Fill) {
-                for item in &loaded {
-                    let _ = self.driver.unload_module(item.module);
+            match &task.kind {
+                TaskKind::Copy => {
+                    let src = match resource_param(task, "src") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let dst = match resource_param(task, "dst") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let (src_ptr, src_bytes) = match self.ptr(src) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    let (dst_ptr, dst_bytes) = match self.ptr(dst) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    if src_bytes != dst_bytes {
+                        unload_ops(&self.driver, &ops);
+                        return Err(map_backend_err(BackendError(format!(
+                            "copy size mismatch: src {src_bytes} dst {dst_bytes}"
+                        ))));
+                    }
+                    ops.push(CapturedOp::Copy {
+                        src: src_ptr,
+                        dst: dst_ptr,
+                        bytes: src_bytes,
+                    });
                 }
-                return Err(map_backend_err(BackendError(format!(
-                    "hip graph thin gate only supports Fill, got {:?}",
-                    task.kind
-                ))));
+                TaskKind::Fill => {
+                    let dst = match resource_param(task, "dst") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    if let Err(err) = f32_param(task, "value") {
+                        unload_ops(&self.driver, &ops);
+                        return Err(map_backend_err(err));
+                    }
+                    let (ptr, bytes) = match self.ptr(dst) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    if bytes % 4 != 0 {
+                        unload_ops(&self.driver, &ops);
+                        return Err(map_backend_err(BackendError(format!(
+                            "fill destination {} length {bytes} is not a multiple of 4",
+                            dst.0
+                        ))));
+                    }
+                    let count = (bytes / 4) as u32;
+                    let program = program_from_task(task);
+                    let hsaco = match emit_hsaco(&program) {
+                        Ok(h) => h,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_emit_err(err));
+                        }
+                    };
+                    let module = match self.driver.load_module(&hsaco) {
+                        Ok(m) => m,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_driver_err(err));
+                        }
+                    };
+                    let func = match self.driver.get_function(module, &program.entry) {
+                        Ok(f) => f,
+                        Err(err) => {
+                            let _ = self.driver.unload_module(module);
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_driver_err(err));
+                        }
+                    };
+                    ops.push(CapturedOp::Fill {
+                        module,
+                        func,
+                        count,
+                        ptr,
+                    });
+                }
+                TaskKind::MatMul => {
+                    let a = match resource_param(task, "a") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let b = match resource_param(task, "b") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let out = match resource_param(task, "out") {
+                        Ok(id) => id,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let m = match u32_param(task, "m") {
+                        Ok(v) => v,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let n = match u32_param(task, "n") {
+                        Ok(v) => v,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let k = match u32_param(task, "k") {
+                        Ok(v) => v,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_backend_err(err));
+                        }
+                    };
+                    let (a_ptr, a_bytes) = match self.ptr(a) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    let (b_ptr, b_bytes) = match self.ptr(b) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    let (out_ptr, out_bytes) = match self.ptr(out) {
+                        Ok(p) => p,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(err);
+                        }
+                    };
+                    if let Err(err) =
+                        expect_bytes(a, a_bytes, (m as usize) * (k as usize) * 4)
+                    {
+                        unload_ops(&self.driver, &ops);
+                        return Err(err);
+                    }
+                    if let Err(err) =
+                        expect_bytes(b, b_bytes, (k as usize) * (n as usize) * 4)
+                    {
+                        unload_ops(&self.driver, &ops);
+                        return Err(err);
+                    }
+                    if let Err(err) =
+                        expect_bytes(out, out_bytes, (m as usize) * (n as usize) * 4)
+                    {
+                        unload_ops(&self.driver, &ops);
+                        return Err(err);
+                    }
+                    let program = program_from_task(task);
+                    let hsaco = match emit_hsaco(&program) {
+                        Ok(h) => h,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_emit_err(err));
+                        }
+                    };
+                    let module = match self.driver.load_module(&hsaco) {
+                        Ok(m) => m,
+                        Err(err) => {
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_driver_err(err));
+                        }
+                    };
+                    let func = match self.driver.get_function(module, &program.entry) {
+                        Ok(f) => f,
+                        Err(err) => {
+                            let _ = self.driver.unload_module(module);
+                            unload_ops(&self.driver, &ops);
+                            return Err(map_driver_err(err));
+                        }
+                    };
+                    ops.push(CapturedOp::MatMul {
+                        module,
+                        func,
+                        a: a_ptr,
+                        b: b_ptr,
+                        out: out_ptr,
+                        m,
+                        n,
+                        k,
+                    });
+                }
+                other => {
+                    unload_ops(&self.driver, &ops);
+                    return Err(map_backend_err(BackendError(format!(
+                        "hip graph thin gate only supports Copy/Fill/MatMul, got {other:?}"
+                    ))));
+                }
             }
-            let dst = match resource_param(task, "dst") {
-                Ok(id) => id,
-                Err(err) => {
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(map_backend_err(err));
-                }
-            };
-            let _value = match f32_param(task, "value") {
-                Ok(v) => v,
-                Err(err) => {
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(map_backend_err(err));
-                }
-            };
-            let (ptr, bytes) = match self.ptr(dst) {
-                Ok(p) => p,
-                Err(err) => {
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(err);
-                }
-            };
-            if bytes % 4 != 0 {
-                for item in &loaded {
-                    let _ = self.driver.unload_module(item.module);
-                }
-                return Err(map_backend_err(BackendError(format!(
-                    "fill destination {} length {bytes} is not a multiple of 4",
-                    dst.0
-                ))));
-            }
-            let count = (bytes / 4) as u32;
-            let program = program_from_task(task);
-            let hsaco = match emit_hsaco(&program) {
-                Ok(h) => h,
-                Err(err) => {
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(map_emit_err(err));
-                }
-            };
-            let module = match self.driver.load_module(&hsaco) {
-                Ok(m) => m,
-                Err(err) => {
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(map_driver_err(err));
-                }
-            };
-            let func = match self.driver.get_function(module, &program.entry) {
-                Ok(f) => f,
-                Err(err) => {
-                    let _ = self.driver.unload_module(module);
-                    for item in &loaded {
-                        let _ = self.driver.unload_module(item.module);
-                    }
-                    return Err(map_driver_err(err));
-                }
-            };
-            loaded.push(LoadedFill {
-                module,
-                func,
-                count,
-                ptr,
-            });
         }
 
-        let result = (|| {
+        let capture = (|| {
             self.driver
                 .stream_begin_capture()
                 .map_err(map_driver_err)?;
-            for item in &loaded {
-                self.driver
-                    .launch_fill_async(item.func, item.ptr, item.count)
-                    .map_err(map_driver_err)?;
+            for op in &ops {
+                match op {
+                    CapturedOp::Copy { src, dst, bytes } => {
+                        self.driver
+                            .memcpy_dtod_async(*dst, *src, *bytes)
+                            .map_err(map_driver_err)?;
+                    }
+                    CapturedOp::Fill {
+                        func, count, ptr, ..
+                    } => {
+                        self.driver
+                            .launch_fill_async(*func, *ptr, *count)
+                            .map_err(map_driver_err)?;
+                    }
+                    CapturedOp::MatMul {
+                        func,
+                        a,
+                        b,
+                        out,
+                        m,
+                        n,
+                        k,
+                        ..
+                    } => {
+                        self.driver
+                            .launch_matmul_async(*func, *a, *b, *out, *m, *n, *k)
+                            .map_err(map_driver_err)?;
+                    }
+                }
             }
             let graph = self.driver.stream_end_capture().map_err(map_driver_err)?;
             let exec = match self.driver.graph_instantiate(graph) {
@@ -213,15 +416,54 @@ impl RocmBackend {
                     return Err(map_driver_err(err));
                 }
             };
-            let launch = self.driver.graph_launch(exec);
-            let _ = self.driver.graph_exec_destroy(exec);
-            let _ = self.driver.graph_destroy(graph);
-            launch.map_err(map_driver_err)
+            Ok((graph, exec))
         })();
 
-        for item in loaded {
-            let _ = self.driver.unload_module(item.module);
+        match capture {
+            Ok((graph, exec)) => {
+                let mut modules = Vec::new();
+                for op in ops {
+                    match op {
+                        CapturedOp::Fill { module, .. } | CapturedOp::MatMul { module, .. } => {
+                            modules.push(module);
+                        }
+                        CapturedOp::Copy { .. } => {}
+                    }
+                }
+                Ok(CapturedHipGraph {
+                    graph,
+                    exec,
+                    modules,
+                })
+            }
+            Err(err) => {
+                unload_ops(&self.driver, &ops);
+                Err(err)
+            }
         }
+    }
+
+    /// Launch a previously captured HIP Graph and synchronize.
+    pub fn launch_hip_graph(&mut self, captured: &CapturedHipGraph) -> Result<()> {
+        self.driver
+            .graph_launch(captured.exec)
+            .map_err(map_driver_err)
+    }
+
+    /// Destroy graph exec / graph and unload HSACO modules owned by `captured`.
+    pub fn release_hip_graph(&mut self, captured: CapturedHipGraph) {
+        let _ = self.driver.graph_exec_destroy(captured.exec);
+        let _ = self.driver.graph_destroy(captured.graph);
+        for module in captured.modules {
+            let _ = self.driver.unload_module(module);
+        }
+    }
+
+    /// Capture a Copy/Fill/MatMul TaskGraph into a HIP Graph, instantiate, and launch once.
+    pub fn run_prepared_hip_graph(&mut self, graph: &Graph) -> Result<()> {
+        let captured = self.capture_hip_graph(graph)?;
+        let result = self.launch_hip_graph(&captured);
+        self.release_hip_graph(captured);
         result
     }
 

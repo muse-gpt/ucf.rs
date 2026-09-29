@@ -5,4 +5,4 @@ mod backend;
 mod driver;
 mod params;
 
-pub use backend::RocmBackend;
+pub use backend::{CapturedHipGraph, RocmBackend};
