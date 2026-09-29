@@ -19,6 +19,12 @@ pub fn emit_hip(program: &ShaderProgram) -> Result<Vec<u8>, String> {
                 bytes.push(0);
                 return Ok(bytes);
             }
+            ShaderOp::Rgba8Denoise => {
+                let text = hip_rgba8_denoise(&program.entry);
+                let mut bytes = text.into_bytes();
+                bytes.push(0);
+                return Ok(bytes);
+            }
         }
     }
     Err("program has no emittable HIP ops".into())
@@ -56,6 +62,30 @@ extern "C" __global__ void {entry}(
         acc += a[row * k + i] * b[i * n + col];
     }}
     out[idx] = acc;
+}}
+"#
+    )
+}
+
+fn hip_rgba8_denoise(entry: &str) -> String {
+    format!(
+        r#"
+extern "C" __global__ void {entry}(
+    const unsigned char* src,
+    unsigned char* out,
+    unsigned int width,
+    unsigned int height
+) {{
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= width * height) return;
+    unsigned int x = idx % width;
+    unsigned int left = (x == 0) ? idx : (idx - 1);
+    unsigned int base = idx * 4;
+    unsigned int lbase = left * 4;
+    out[base + 0] = (unsigned char)(((unsigned int)src[base + 0] + (unsigned int)src[lbase + 0]) >> 1);
+    out[base + 1] = (unsigned char)(((unsigned int)src[base + 1] + (unsigned int)src[lbase + 1]) >> 1);
+    out[base + 2] = (unsigned char)(((unsigned int)src[base + 2] + (unsigned int)src[lbase + 2]) >> 1);
+    out[base + 3] = src[base + 3];
 }}
 "#
     )

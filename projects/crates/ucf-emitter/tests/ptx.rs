@@ -19,3 +19,13 @@ fn matmul_ptx_has_entry_and_fma() {
     assert!(text.contains(".entry ucf_matmul"));
     assert!(text.contains("fma.rn.f32"));
 }
+
+#[test]
+fn denoise_ptx_has_entry_and_u8_ops() {
+    let program = ShaderProgram::rgba8_denoise("ucf_denoise");
+    let ptx = emit_ptx(&program).expect("ptx");
+    let text = String::from_utf8(ptx).expect("utf8");
+    assert!(text.contains(".entry ucf_denoise"));
+    assert!(text.contains("ld.global.u8"));
+    assert!(text.contains("st.global.u8"));
+}

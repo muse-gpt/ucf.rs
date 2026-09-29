@@ -17,6 +17,12 @@ pub fn emit_ptx(program: &ShaderProgram) -> Result<Vec<u8>, String> {
                 bytes.push(0);
                 return Ok(bytes);
             }
+            ShaderOp::Rgba8Denoise => {
+                let text = emit_rgba8_denoise(&program.entry);
+                let mut bytes = text.into_bytes();
+                bytes.push(0);
+                return Ok(bytes);
+            }
         }
     }
     Err("program has no emittable PTX ops".into())
@@ -128,6 +134,87 @@ UCF_STORE:
     mul.wide.u32 %rd9, %r10, 4;
     add.u64 %rd8, %rd8, %rd9;
     st.global.f32 [%rd8], %f1;
+UCF_END:
+    ret;
+}}
+"#
+    )
+}
+
+fn emit_rgba8_denoise(entry: &str) -> String {
+    // Horizontal low-pass: out.rgb = (pix + left_or_self) / 2, out.a = pix.a
+    format!(
+        r#"
+.version 7.0
+.target sm_75
+.address_size 64
+
+.visible .entry {entry}(
+    .param .u64 src,
+    .param .u64 out,
+    .param .u32 width,
+    .param .u32 height
+)
+{{
+    .reg .pred %p<4>;
+    .reg .b32 %r<32>;
+    .reg .b64 %rd<24>;
+
+    mov.u32 %r2, %ctaid.x;
+    mov.u32 %r3, %ntid.x;
+    mov.u32 %r4, %tid.x;
+    mad.lo.s32 %r10, %r2, %r3, %r4;
+
+    ld.param.u32 %r5, [width];
+    ld.param.u32 %r6, [height];
+    mul.lo.u32 %r7, %r5, %r6;
+    setp.ge.u32 %p1, %r10, %r7;
+    @%p1 bra UCF_END;
+
+    rem.u32 %r8, %r10, %r5;
+
+    ld.param.u64 %rd1, [src];
+    cvta.to.global.u64 %rd2, %rd1;
+    mul.wide.u32 %rd3, %r10, 4;
+    add.u64 %rd4, %rd2, %rd3;
+    ld.global.u8 %r11, [%rd4];
+    add.u64 %rd5, %rd4, 1;
+    ld.global.u8 %r12, [%rd5];
+    add.u64 %rd6, %rd4, 2;
+    ld.global.u8 %r13, [%rd6];
+    add.u64 %rd7, %rd4, 3;
+    ld.global.u8 %r14, [%rd7];
+
+    mov.u32 %r15, %r10;
+    setp.eq.u32 %p2, %r8, 0;
+    @%p2 bra UCF_LEFT_DONE;
+    sub.u32 %r15, %r10, 1;
+UCF_LEFT_DONE:
+    mul.wide.u32 %rd8, %r15, 4;
+    add.u64 %rd9, %rd2, %rd8;
+    ld.global.u8 %r16, [%rd9];
+    add.u64 %rd10, %rd9, 1;
+    ld.global.u8 %r17, [%rd10];
+    add.u64 %rd11, %rd9, 2;
+    ld.global.u8 %r18, [%rd11];
+
+    add.u32 %r19, %r11, %r16;
+    shr.u32 %r19, %r19, 1;
+    add.u32 %r20, %r12, %r17;
+    shr.u32 %r20, %r20, 1;
+    add.u32 %r21, %r13, %r18;
+    shr.u32 %r21, %r21, 1;
+
+    ld.param.u64 %rd12, [out];
+    cvta.to.global.u64 %rd13, %rd12;
+    add.u64 %rd14, %rd13, %rd3;
+    st.global.u8 [%rd14], %r19;
+    add.u64 %rd15, %rd14, 1;
+    st.global.u8 [%rd15], %r20;
+    add.u64 %rd16, %rd14, 2;
+    st.global.u8 [%rd16], %r21;
+    add.u64 %rd17, %rd14, 3;
+    st.global.u8 [%rd17], %r14;
 UCF_END:
     ret;
 }}

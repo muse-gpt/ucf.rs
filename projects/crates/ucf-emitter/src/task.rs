@@ -17,6 +17,9 @@ pub fn program_from_task(task: &TaskNode) -> ShaderProgram {
             ShaderProgram::dispatch_fill("ucf_fill", value)
         }
         TaskKind::MatMul => ShaderProgram::matmul("ucf_matmul"),
+        TaskKind::Custom(name) if name == "denoise" => {
+            ShaderProgram::rgba8_denoise("ucf_denoise")
+        }
         TaskKind::Dispatch | TaskKind::Custom(_) => {
             ShaderProgram::dispatch_fill("ucf_dispatch", 1.0)
         }
@@ -28,8 +31,10 @@ pub fn program_from_task(task: &TaskNode) -> ShaderProgram {
 
 /// Whether the program needs a device kernel (vs memcpy-only).
 pub fn needs_kernel(program: &ShaderProgram) -> bool {
-    program
-        .ops
-        .iter()
-        .any(|op| matches!(op, ShaderOp::IotaFill { .. } | ShaderOp::MatMul))
+    program.ops.iter().any(|op| {
+        matches!(
+            op,
+            ShaderOp::IotaFill { .. } | ShaderOp::MatMul | ShaderOp::Rgba8Denoise
+        )
+    })
 }
