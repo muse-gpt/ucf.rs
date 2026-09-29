@@ -11,6 +11,6 @@ mod scheduler;
 pub use backend::Backend;
 pub use budget::{fits_120hz_frame, FRAME_BUDGET_120HZ_MICROS};
 pub use deadline::effective_deadlines;
-pub use error::{Error, Result};
+pub use error::{Error, ErrorCode, Result};
 pub use noop::NoopBackend;
 pub use scheduler::Scheduler;
