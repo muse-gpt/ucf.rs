@@ -5,6 +5,7 @@ use ucf_ir::{Graph, Objective, Priority, TaskId};
 use crate::backend::Backend;
 use crate::deadline::effective_deadlines;
 use crate::error::{Error, Result};
+use crate::exec::ExecutionBindings;
 use ucf_capability::CapabilityReport;
 
 /// Places and submits tasks onto registered backends.
@@ -23,6 +24,14 @@ impl Scheduler {
     /// Register a backend for placement.
     pub fn register(&mut self, backend: Box<dyn Backend>) {
         self.backends.push(backend);
+    }
+
+    /// Push external buffers / preferred stream onto every registered backend.
+    pub fn bind_externals(&mut self, bindings: &ExecutionBindings) -> Result<()> {
+        for backend in &mut self.backends {
+            backend.bind_externals(bindings)?;
+        }
+        Ok(())
     }
 
     /// Capability rows for every registered backend (application probe).
