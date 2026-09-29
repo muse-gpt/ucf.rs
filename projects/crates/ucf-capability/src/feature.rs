@@ -5,8 +5,12 @@ use serde::{Deserialize, Serialize};
 pub enum Feature {
     // Compute
     CudaGraph,
+    /// HIP graph capture / replay (AMD ROCm path).
+    HipGraph,
     UnifiedMemory,
     TensorCore,
+    /// AMD matrix cores (MFMA); distinct from NVIDIA `TensorCore`.
+    MatrixCore,
     DynamicParallelism,
     CooperativeGroups,
     ClusterLaunch,
