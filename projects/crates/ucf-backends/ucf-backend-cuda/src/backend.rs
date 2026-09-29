@@ -68,10 +68,20 @@ pub struct CudaBackend {
 }
 
 impl CudaBackend {
-    /// Open device `device_index` (usually `0`).
+    /// Open device `device_index` (usually `0`) with a fresh CUDA context.
     pub fn new(device_index: u32) -> Result<Self> {
         let driver = CudaDriver::new(device_index).map_err(map_driver_err)?;
-        Ok(Self {
+        Ok(Self::from_driver(driver))
+    }
+
+    /// Open via the device primary context (interop with Titan / DXO).
+    pub fn new_primary(device_index: u32) -> Result<Self> {
+        let driver = CudaDriver::new_primary(device_index).map_err(map_driver_err)?;
+        Ok(Self::from_driver(driver))
+    }
+
+    fn from_driver(driver: CudaDriver) -> Self {
+        Self {
             driver,
             buffers: BTreeMap::new(),
             imported: BTreeMap::new(),
@@ -84,7 +94,7 @@ impl CudaBackend {
             events_owned: Vec::new(),
             streams_owned: Vec::new(),
             preferred_stream: None,
-        })
+        }
     }
 
     /// Default CUDA stream wrapped as [`CudaExecStream`] (same stream used when no override).
