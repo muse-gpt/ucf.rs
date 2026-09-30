@@ -1,5 +1,16 @@
-use ucf_ir::{Domain, Graph};
+use ucf_ir::{Domain, Graph, ResourceId};
 use ucf_scheduler::{Error, Result};
+
+/// One logical domain change applied by capacity policy before run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResourceMigration {
+    /// Logical resource id moved.
+    pub resource_id: ResourceId,
+    /// Domain before migration.
+    pub from: Domain,
+    /// Domain after migration.
+    pub to: Domain,
+}
 
 /// How the runtime hides finite VRAM / host memory from the user-facing IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,11 +63,20 @@ pub fn check_soft_limit(graph: &Graph, policy: CapacityPolicy) -> Result<()> {
 ///
 /// Resources are considered in ascending id order. Returns how many nodes moved.
 pub fn migrate_overflow_to_host(graph: &mut Graph, from: Domain, budget: u64) -> usize {
+    migrate_overflow_to_host_logged(graph, from, budget).len()
+}
+
+/// Like [`migrate_overflow_to_host`], but returns per-resource migration records.
+pub fn migrate_overflow_to_host_logged(
+    graph: &mut Graph,
+    from: Domain,
+    budget: u64,
+) -> Vec<ResourceMigration> {
     let mut used = domain_bytes(graph, from);
     if used <= budget {
-        return 0;
+        return Vec::new();
     }
-    let mut moved = 0usize;
+    let mut migrations = Vec::new();
     let mut ids: Vec<_> = graph
         .resources
         .nodes
@@ -71,21 +91,28 @@ pub fn migrate_overflow_to_host(graph: &mut Graph, from: Domain, budget: u64) ->
         }
         if let Some(node) = graph.resources.nodes.iter_mut().find(|n| n.id == id) {
             let size = node.byte_size.unwrap_or(0);
+            migrations.push(ResourceMigration {
+                resource_id: id,
+                from,
+                to: Domain::Host,
+            });
             node.domain = Domain::Host;
             used = used.saturating_sub(size);
-            moved += 1;
         }
     }
-    moved
+    migrations
 }
 
 /// Apply capacity policy: migrate and/or reject before scheduling.
-pub fn apply_capacity(graph: &mut Graph, policy: CapacityPolicy) -> Result<()> {
+pub fn apply_capacity(graph: &mut Graph, policy: CapacityPolicy) -> Result<Vec<ResourceMigration>> {
     match policy {
-        CapacityPolicy::Infinite => Ok(()),
-        CapacityPolicy::SoftLimit { .. } => check_soft_limit(graph, policy),
+        CapacityPolicy::Infinite => Ok(Vec::new()),
+        CapacityPolicy::SoftLimit { .. } => {
+            check_soft_limit(graph, policy)?;
+            Ok(Vec::new())
+        }
         CapacityPolicy::MigrateToHost { domain, bytes } => {
-            migrate_overflow_to_host(graph, domain, bytes);
+            let migrations = migrate_overflow_to_host_logged(graph, domain, bytes);
             let used = domain_bytes(graph, domain);
             if used > bytes {
                 Err(Error::CapacityExceeded {
@@ -94,7 +121,7 @@ pub fn apply_capacity(graph: &mut Graph, policy: CapacityPolicy) -> Result<()> {
                     limit: bytes,
                 })
             } else {
-                Ok(())
+                Ok(migrations)
             }
         }
     }

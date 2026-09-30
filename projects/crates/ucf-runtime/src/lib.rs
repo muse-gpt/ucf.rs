@@ -6,7 +6,8 @@ mod diagnostics;
 mod runtime;
 
 pub use capacity::{
-    apply_capacity, check_soft_limit, domain_bytes, migrate_overflow_to_host, CapacityPolicy,
+    apply_capacity, check_soft_limit, domain_bytes, migrate_overflow_to_host,
+    migrate_overflow_to_host_logged, CapacityPolicy, ResourceMigration,
 };
 pub use diagnostics::{
     kinds as event_kinds, ExecutionDiagnostics, ExecutionEvent, ExecutionEventBuilder,
