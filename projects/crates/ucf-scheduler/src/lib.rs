@@ -7,6 +7,7 @@ mod deadline;
 mod error;
 mod exec;
 mod noop;
+mod probe;
 mod scheduler;
 
 pub use backend::Backend;
@@ -18,4 +19,5 @@ pub use exec::{
     ImmediateStream, StreamEventBridge,
 };
 pub use noop::NoopBackend;
+pub use probe::{kinds as probe_kinds, BackendProbeEvent};
 pub use scheduler::{BackendSwitch, Scheduler};

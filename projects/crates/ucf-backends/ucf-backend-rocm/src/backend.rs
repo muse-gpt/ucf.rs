@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use ucf_capability::{Feature, FeatureSet};
 use ucf_emitter::{emit_hsaco, program_from_task};
 use ucf_ir::{Graph, TaskKind, TaskNode};
-use ucf_scheduler::{Backend, Error as SchedulerError, Result};
+use ucf_scheduler::{Backend, Error as SchedulerError, Result, BackendProbeEvent, probe_kinds};
 use ucf_types::ResourceId;
 
 use crate::driver::{
@@ -36,6 +36,7 @@ pub struct RocmBackend {
     module_cache: BTreeMap<u64, CachedHipModule>,
     module_cache_hits: u64,
     module_cache_misses: u64,
+    pending_probes: Vec<BackendProbeEvent>,
 }
 
 impl RocmBackend {
@@ -48,6 +49,7 @@ impl RocmBackend {
             module_cache: BTreeMap::new(),
             module_cache_hits: 0,
             module_cache_misses: 0,
+            pending_probes: Vec::new(),
         })
     }
 
@@ -75,8 +77,18 @@ impl RocmBackend {
         let key = code_key(code);
         if let Some(cached) = self.module_cache.get(&key) {
             self.module_cache_hits += 1;
+            self.pending_probes.push(BackendProbeEvent::new(
+                "rocm",
+                probe_kinds::MODULE_CACHE_HIT,
+                Some(key),
+            ));
             return Ok((cached.module, cached.func));
         }
+        self.pending_probes.push(BackendProbeEvent::new(
+            "rocm",
+            probe_kinds::MODULE_COMPILE,
+            Some(key),
+        ));
         let module = self.driver.load_module(code).map_err(map_driver_err)?;
         let func = match self.driver.get_function(module, entry) {
             Ok(f) => f,
@@ -88,6 +100,11 @@ impl RocmBackend {
         self.module_cache
             .insert(key, CachedHipModule { module, func });
         self.module_cache_misses += 1;
+        self.pending_probes.push(BackendProbeEvent::new(
+            "rocm",
+            probe_kinds::MODULE_CACHE_MISS,
+            Some(key),
+        ));
         Ok((module, func))
     }
 
@@ -687,6 +704,10 @@ impl Backend for RocmBackend {
                 "rocm backend does not implement {other:?}"
             )))),
         }
+    }
+
+    fn take_probe_events(&mut self) -> Vec<BackendProbeEvent> {
+        std::mem::take(&mut self.pending_probes)
     }
 }
 

@@ -6,6 +6,7 @@ use crate::backend::Backend;
 use crate::deadline::effective_deadlines;
 use crate::error::{Error, Result};
 use crate::exec::ExecutionBindings;
+use crate::probe::BackendProbeEvent;
 use ucf_capability::CapabilityReport;
 
 /// One cross-backend placement transition observed during dispatch.
@@ -23,6 +24,7 @@ pub struct BackendSwitch {
 pub struct Scheduler {
     backends: Vec<Box<dyn Backend>>,
     last_backend_switches: Vec<BackendSwitch>,
+    last_backend_probes: Vec<BackendProbeEvent>,
 }
 
 impl Scheduler {
@@ -31,12 +33,18 @@ impl Scheduler {
         Self {
             backends: Vec::new(),
             last_backend_switches: Vec::new(),
+            last_backend_probes: Vec::new(),
         }
     }
 
     /// Take backend-switch records from the most recent [`Self::dispatch`] / submit.
     pub fn take_backend_switches(&mut self) -> Vec<BackendSwitch> {
         std::mem::take(&mut self.last_backend_switches)
+    }
+
+    /// Take backend probe records from the most recent [`Self::dispatch`] / submit.
+    pub fn take_backend_probes(&mut self) -> Vec<BackendProbeEvent> {
+        std::mem::take(&mut self.last_backend_probes)
     }
 
     /// Register a backend for placement.
@@ -101,6 +109,7 @@ impl Scheduler {
 
     fn dispatch(&mut self, graph: &Graph) -> Result<()> {
         self.last_backend_switches.clear();
+        self.last_backend_probes.clear();
         let deadlines = effective_deadlines(graph);
         let order = schedule_order(graph, &deadlines)?;
         let mut last_backend: Option<usize> = None;
@@ -123,6 +132,8 @@ impl Scheduler {
                 }
             }
             self.backends[backend_idx].submit_task(graph, task)?;
+            self.last_backend_probes
+                .extend(self.backends[backend_idx].take_probe_events());
             last_backend = Some(backend_idx);
         }
         Ok(())
