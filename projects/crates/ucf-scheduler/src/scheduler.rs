@@ -8,9 +8,21 @@ use crate::error::{Error, Result};
 use crate::exec::ExecutionBindings;
 use ucf_capability::CapabilityReport;
 
+/// One cross-backend placement transition observed during dispatch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackendSwitch {
+    /// Backend flushed before the switch.
+    pub from_backend: String,
+    /// Backend receiving the next task.
+    pub to_backend: String,
+    /// Task that triggered the switch.
+    pub at_task: TaskId,
+}
+
 /// Places and submits tasks onto registered backends.
 pub struct Scheduler {
     backends: Vec<Box<dyn Backend>>,
+    last_backend_switches: Vec<BackendSwitch>,
 }
 
 impl Scheduler {
@@ -18,7 +30,13 @@ impl Scheduler {
     pub fn new() -> Self {
         Self {
             backends: Vec::new(),
+            last_backend_switches: Vec::new(),
         }
+    }
+
+    /// Take backend-switch records from the most recent [`Self::dispatch`] / submit.
+    pub fn take_backend_switches(&mut self) -> Vec<BackendSwitch> {
+        std::mem::take(&mut self.last_backend_switches)
     }
 
     /// Register a backend for placement.
@@ -82,6 +100,7 @@ impl Scheduler {
     }
 
     fn dispatch(&mut self, graph: &Graph) -> Result<()> {
+        self.last_backend_switches.clear();
         let deadlines = effective_deadlines(graph);
         let order = schedule_order(graph, &deadlines)?;
         let mut last_backend: Option<usize> = None;
@@ -96,6 +115,11 @@ impl Scheduler {
             if let Some(prev) = last_backend {
                 if prev != backend_idx {
                     self.backends[prev].flush()?;
+                    self.last_backend_switches.push(BackendSwitch {
+                        from_backend: self.backends[prev].name().to_string(),
+                        to_backend: self.backends[backend_idx].name().to_string(),
+                        at_task: task_id,
+                    });
                 }
             }
             self.backends[backend_idx].submit_task(graph, task)?;
@@ -357,6 +381,15 @@ mod tests {
                 "flush:dx12".to_string(),
                 "submit:cuda:2".to_string(),
             ]
+        );
+        let switches = sched.take_backend_switches();
+        assert_eq!(
+            switches,
+            vec![BackendSwitch {
+                from_backend: "dx12".into(),
+                to_backend: "cuda".into(),
+                at_task: TaskId(2),
+            }]
         );
     }
 

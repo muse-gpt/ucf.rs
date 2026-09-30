@@ -18,4 +18,4 @@ pub use exec::{
     ImmediateStream, StreamEventBridge,
 };
 pub use noop::NoopBackend;
-pub use scheduler::Scheduler;
+pub use scheduler::{BackendSwitch, Scheduler};
