@@ -123,10 +123,22 @@ fn application_contract_encode_prepare_run_flush_readback() {
     assert_eq!(out, vec![3.0, 3.0, 7.0, 7.0]);
 
     let diag = session.diagnostics();
-    assert!(diag.contains_kind("graph_validate"));
-    assert!(diag.contains_kind("resource_prepare"));
-    assert!(diag.contains_kind("task_submit"));
-    assert!(diag.contains_kind("flush"));
+    assert!(diag.contains_kind(event_kinds::GRAPH_VALIDATE));
+    assert!(diag.contains_kind(event_kinds::RESOURCE_PREPARE));
+    assert!(diag.contains_kind(event_kinds::RESOURCE_UPLOAD));
+    assert!(diag.contains_kind(event_kinds::TASK_SUBMIT));
+    assert!(diag.contains_kind(event_kinds::TASK_COMPLETE));
+    assert!(diag.contains_kind(event_kinds::FLUSH));
+    assert!(diag.contains_kind(event_kinds::READBACK));
+
+    let upload = diag.first_of_kind(event_kinds::RESOURCE_UPLOAD).unwrap();
+    assert_eq!(upload.resource_id, Some(1));
+    assert!(upload.host_transfer);
+    assert_eq!(upload.stream_id.as_deref(), Some("immediate"));
+
+    let readback = diag.first_of_kind(event_kinds::READBACK).unwrap();
+    assert_eq!(readback.resource_id, Some(4));
+    assert!(readback.host_transfer);
 }
 
 #[test]
@@ -146,4 +158,37 @@ fn application_contract_maps_ir_errors() {
     };
     let err = session.prepare(&bad).expect_err("invalid graph");
     assert_eq!(err.code(), SchedulerErrorCode::Ir);
+    let e = session
+        .diagnostics()
+        .first_of_kind(event_kinds::BACKEND_ERROR)
+        .expect("backend_error event");
+    assert_eq!(e.error_code, Some(SchedulerErrorCode::Ir));
+}
+
+#[test]
+fn application_contract_stream_event_diagnostics() {
+    let mut session = CpuSession::open();
+    session.set_graph_id(Some(99));
+    let stream = immediate_stream();
+    let upload = immediate_event();
+    let compute = immediate_event();
+    session
+        .record_event(stream.as_ref(), upload.as_ref())
+        .expect("record upload");
+    session
+        .wait_event(stream.as_ref(), upload.as_ref())
+        .expect("wait upload");
+    session
+        .record_event(stream.as_ref(), compute.as_ref())
+        .expect("record compute");
+
+    let diag = session.diagnostics();
+    assert!(diag.contains_kind(event_kinds::EVENT_SIGNAL));
+    assert!(diag.contains_kind(event_kinds::STREAM_WAIT));
+    assert_eq!(
+        diag.first_of_kind(event_kinds::EVENT_SIGNAL)
+            .unwrap()
+            .graph_id,
+        Some(99)
+    );
 }

@@ -8,7 +8,9 @@ mod runtime;
 pub use capacity::{
     apply_capacity, check_soft_limit, domain_bytes, migrate_overflow_to_host, CapacityPolicy,
 };
-pub use diagnostics::{ExecutionDiagnostics, ExecutionEvent};
+pub use diagnostics::{
+    kinds as event_kinds, ExecutionDiagnostics, ExecutionEvent, ExecutionEventBuilder,
+};
 pub use runtime::Runtime;
 
 use ucf_ir::Graph;

@@ -107,19 +107,17 @@ fn external_host_buffers_and_immediate_stream_run() {
     }
     session.set_stream(immediate_stream());
 
+    let stream = immediate_stream();
     let upload = immediate_event();
     let compute = immediate_event();
     session
-        .stream_bridge()
-        .record_event(immediate_stream().as_ref(), upload.as_ref())
+        .record_event(stream.as_ref(), upload.as_ref())
         .expect("record upload");
     session
-        .stream_bridge()
-        .wait_event(immediate_stream().as_ref(), upload.as_ref())
+        .wait_event(stream.as_ref(), upload.as_ref())
         .expect("upload → compute");
     session
-        .stream_bridge()
-        .record_event(immediate_stream().as_ref(), compute.as_ref())
+        .record_event(stream.as_ref(), compute.as_ref())
         .expect("record compute");
 
     session.prepare(&graph).expect("prepare");
@@ -131,7 +129,12 @@ fn external_host_buffers_and_immediate_stream_run() {
 
     let out = session.read_f32(ResourceId(4)).expect("readback");
     assert_eq!(out, vec![3.0, 3.0, 7.0, 7.0]);
-    assert!(session.diagnostics().contains_kind("resource_bind"));
+    let diag = session.diagnostics();
+    assert!(diag.contains_kind("resource_bind"));
+    assert!(diag.contains_kind("event_signal"));
+    assert!(diag.contains_kind("stream_wait"));
+    assert!(diag.contains_kind("resource_upload"));
+    assert!(diag.contains_kind("readback"));
 }
 
 #[test]

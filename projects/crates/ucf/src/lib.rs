@@ -42,7 +42,8 @@ pub use ucf_scheduler::{
     FRAME_BUDGET_120HZ_MICROS,
 };
 pub use ucf_runtime::{
-    dry_run, CapacityPolicy, ExecutionDiagnostics, ExecutionEvent, Runtime,
+    dry_run, event_kinds, CapacityPolicy, ExecutionDiagnostics, ExecutionEvent,
+    ExecutionEventBuilder, Runtime,
 };
 
 #[cfg(feature = "cpu")]
@@ -73,13 +74,13 @@ pub mod prelude {
         pick_descriptor_strategy, pick_pipeline_strategy, pick_sync_strategy, Access,
         AttentionMetrics, Backend, BackendCapabilities, BackendPerfRow, CapacityPolicy,
         CapabilityReport, chain_edges, DepEdge, DepKind, DescriptorStrategy, Dispatch, Domain,
-        dry_run, ExecutionDiagnostics, ExecutionEvent, Feature, FeatureSet, Graph, GraphBuilder,
-        MatmulMetrics, NoopBackend, Objective, Optimization, ParamValue, PerfReport,
-        PipelineStrategy, Priority, ResourceGraph, ResourceId, ResourceKind, ResourceNode,
-        Runtime, Scheduler, SchedulerErrorCode, ExecutionBindings, ExternalBuffer, ImmediateBridge,
-        ImmediateEvent, ImmediateStream, ExecEvent, ExecStream, StreamEventBridge, ShaderId,
-        SyncStrategy, TaskGraph, TaskId, TaskKind, TaskNode, TimedSample, FRAME_BUDGET_120HZ_MICROS,
-        UCF_MAGIC, UCF_WIRE_MAJOR,
+        dry_run, event_kinds, ExecutionDiagnostics, ExecutionEvent, ExecutionEventBuilder, Feature,
+        FeatureSet, Graph, GraphBuilder, MatmulMetrics, NoopBackend, Objective, Optimization,
+        ParamValue, PerfReport, PipelineStrategy, Priority, ResourceGraph, ResourceId, ResourceKind,
+        ResourceNode, Runtime, Scheduler, SchedulerErrorCode, ExecutionBindings, ExternalBuffer,
+        ImmediateBridge, ImmediateEvent, ImmediateStream, ExecEvent, ExecStream, StreamEventBridge,
+        ShaderId, SyncStrategy, TaskGraph, TaskId, TaskKind, TaskNode, TimedSample,
+        FRAME_BUDGET_120HZ_MICROS, UCF_MAGIC, UCF_WIRE_MAJOR,
     };
 
     #[cfg(feature = "cpu")]
